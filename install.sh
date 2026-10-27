@@ -14,6 +14,8 @@
 #   HU_DOWNLOAD_BASE   应用包下载地址前缀（镜像用），默认 GitHub Releases
 #   HU_JRE_BASE        Java 运行时下载地址前缀（镜像用），默认 Adoptium 的 GitHub Releases
 #   HU_NO_MODIFY_PATH  设为 1 时不修改 shell 配置文件
+#
+# 变量后紧跟中文时必须写成 ${var}：macOS 的 /bin/sh（bash 3.2）会把多字节字符算进变量名，配合 set -u 直接退出。
 set -eu
 
 REPO="lihu-001/hu-agent"
@@ -46,7 +48,7 @@ sha256_of() {
 
 verify() {
     actual=$(sha256_of "$1")
-    [ "$actual" = "$2" ] || fail "校验失败：$(basename "$1")（期望 $2，实际 $actual）"
+    [ "$actual" = "$2" ] || fail "校验失败：$(basename "$1")（期望 $2，实际 ${actual}）"
 }
 
 # ---- 平台 ----
@@ -60,7 +62,7 @@ case $os in
         fi
         ;;
     Darwin) jre_os=mac ;;
-    *) fail "不支持的系统：$os（Windows 请在 PowerShell 中使用 install.ps1）" ;;
+    *) fail "不支持的系统：${os}（Windows 请在 PowerShell 中使用 install.ps1）" ;;
 esac
 case $arch in
     x86_64 | amd64) jre_arch=x64 ;;
@@ -101,7 +103,7 @@ trap 'rm -rf "$work"' EXIT
 trap 'exit 1' INT TERM
 
 # ---- 下载并校验（全部成功后才替换已安装的文件）----
-say "下载 hu-agent（$version）"
+say "下载 hu-agent（${version}）"
 download "$app_base/hu-agent.tar.gz" "$work/hu-agent.tar.gz"
 download "$app_base/hu-agent.tar.gz.sha256" "$work/hu-agent.tar.gz.sha256"
 verify "$work/hu-agent.tar.gz" "$(cut -d ' ' -f 1 < "$work/hu-agent.tar.gz.sha256")"
@@ -112,10 +114,10 @@ tar -xzf "$work/hu-agent.tar.gz" -C "$work/app"
 runtime="$hu_home/runtime"
 jre_home=
 if [ -x "$runtime/bin/java" ] && [ "$(cat "$runtime/.hu-runtime" 2>/dev/null || true)" = "$JRE_RELEASE" ]; then
-    say "Java 运行时已是 $JRE_RELEASE，跳过下载"
+    say "Java 运行时已是 ${JRE_RELEASE}，跳过下载"
 else
     jre_file="OpenJDK17U-jre_${jre_arch}_${jre_os}_hotspot_${JRE_FILE_VERSION}.tar.gz"
-    say "下载 Java 运行时 $JRE_RELEASE（$jre_os/$jre_arch，约 45MB）"
+    say "下载 Java 运行时 ${JRE_RELEASE}（$jre_os/${jre_arch}，约 45MB）"
     download "$jre_base/$jre_file" "$work/jre.tar.gz"
     verify "$work/jre.tar.gz" "$jre_sha256"
     mkdir "$work/jre"
@@ -176,10 +178,10 @@ case ":$PATH:" in
                 mkdir -p "$(dirname "$rc")"
                 printf '\n# hu-agent PATH\n%s\n' "$line" >> "$rc"
             fi
-            say "已把 $bin_dir 加入 $rc；请重新打开终端（或执行 source $rc）后使用 hu"
+            say "已把 $bin_dir 加入 ${rc}；请重新打开终端（或执行 source ${rc}）后使用 hu"
         fi
         ;;
 esac
 
-say "安装完成：$installed（$hu_home）"
+say "安装完成：${installed}（${hu_home}）"
 say "进入项目目录运行 hu 即可开始；首次运行会引导填写模型接口与 API Key。"

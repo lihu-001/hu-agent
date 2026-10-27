@@ -17,7 +17,7 @@ hu_home=$(cd "$app_dir/.." && pwd)
 
 java_cmd=${HU_JAVA:-$hu_home/runtime/bin/java}
 if [ ! -x "$java_cmd" ]; then
-    echo "hu: 找不到 Java 运行时 $java_cmd，请重新运行安装命令。" >&2
+    echo "hu: 找不到 Java 运行时 ${java_cmd}，请重新运行安装命令。" >&2
     exit 1
 fi
 
