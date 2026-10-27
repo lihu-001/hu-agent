@@ -21,6 +21,18 @@ jobs:
           cache: maven
       - name: Build and test
         run: mvn -B package
+      # 失败的测试写成 annotation，在运行页面的摘要（以及不需要登录的 check-runs API）中直接可见。
+      - name: Report test failures
+        if: failure()
+        shell: bash
+        run: |
+          for f in target/surefire-reports/*.txt; do
+            [ -f "$f" ] || continue
+            if grep -qE "<<< (FAILURE|ERROR)" "$f"; then
+              detail=$(grep -vE "^-+$|^Test set:" "$f" | head -n 12 | tr '\r\n' '  ' | cut -c 1-1500)
+              echo "::error title=$(basename "$f" .txt)::$detail"
+            fi
+          done
       - name: Smoke test the packaged jar
         shell: bash
         run: |
