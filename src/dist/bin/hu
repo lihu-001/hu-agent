@@ -1,0 +1,27 @@
+#!/bin/sh
+# hu-agent 启动脚本。安装布局：<HU_HOME>/app/bin/hu，Java 运行时固定为 <HU_HOME>/runtime。
+# HU_JAVA 可临时指定其他 java（仅用于开发调试），HU_JAVA_OPTS 追加 JVM 参数。
+set -e
+
+# 解析符号链接（~/.local/bin/hu -> <HU_HOME>/app/bin/hu），不依赖 GNU readlink -f。
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+app_dir=$(cd "$(dirname "$self")/.." && pwd)
+hu_home=$(cd "$app_dir/.." && pwd)
+
+java_cmd=${HU_JAVA:-$hu_home/runtime/bin/java}
+if [ ! -x "$java_cmd" ]; then
+    echo "hu: 找不到 Java 运行时 $java_cmd，请重新运行安装命令。" >&2
+    exit 1
+fi
+
+# HU_JAVA_OPTS 按空白拆分，属于有意为之。
+# shellcheck disable=SC2086
+exec "$java_cmd" -Dfile.encoding=UTF-8 -Dhu.home="$hu_home" -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
+    $HU_JAVA_OPTS -jar "$app_dir/lib/hu-agent.jar" "$@"

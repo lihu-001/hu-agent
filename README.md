@@ -1,0 +1,160 @@
+# hu-agent
+
+终端里的 AI 编程助手：在项目目录输入 `hu` 即可开始对话。它会读写文件、执行命令，并按你的确认行事。基于 [java-agent](https://github.com/lihu-001/java-agent) 教程 S18 的完整实现，包括权限确认、Hook、任务清单、子代理、技能、上下文压缩、记忆、任务图、后台任务、定时计划、团队协作、MCP、工作流、`/goal` 目标循环和斜杠命令。
+
+## 安装
+
+macOS / Linux：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lihu-001/hu-agent/main/install.sh | sh
+```
+
+Windows（PowerShell）：
+
+```powershell
+irm https://raw.githubusercontent.com/lihu-001/hu-agent/main/install.ps1 | iex
+```
+
+不需要预先安装 Java。安装脚本会做这些事：
+
+- 下载发布包并校验 sha256；
+- 下载一份锁定版本的 Temurin JRE 17（约 45MB，sha256 写死在脚本里）；
+- 把 `hu` 加入 PATH。
+
+hu 只使用这份私有 JRE，和电脑上已装的 JDK 互不影响。
+
+支持平台：
+
+| 系统 | 支持的架构 |
+| --- | --- |
+| Linux | x64、arm64、Alpine x64 |
+| macOS | Intel、Apple 芯片 |
+| Windows | x64（ARM64 通过系统仿真运行） |
+
+安装后的目录：
+
+```text
+~/.hu-agent/
+├── app/                 启动脚本与 hu-agent.jar（每次安装整体替换）
+├── runtime/             私有 Java 运行时（锁定版本变化时才重新下载）
+├── config.properties    模型接口配置（首次运行时生成）
+├── hook-trust/          Hook 授权记录
+└── mcp-trust/           MCP 授权记录
+~/.local/bin/hu          → ~/.hu-agent/app/bin/hu（Windows 把 app\bin 加入用户 PATH）
+```
+
+**升级**：重新运行安装命令。配置、授权记录和 JRE 都会保留。
+
+**安装指定版本**：先设置环境变量 `HU_VERSION=v0.1.0`，再运行安装命令。
+
+**卸载**：
+- macOS / Linux：删除 `~/.hu-agent` 和 `~/.local/bin/hu`，再删掉 shell 配置文件里 `# hu-agent PATH` 下面那一行。
+- Windows：删除 `%USERPROFILE%\.hu-agent`，再从用户 PATH 中去掉 `...\.hu-agent\app\bin`。
+
+### 安装脚本的环境变量
+
+| 变量 | 作用 |
+| --- | --- |
+| `HU_VERSION` | 安装指定版本，默认最新发布 |
+| `HU_HOME` | 安装目录，默认 `~/.hu-agent` |
+| `HU_BIN_DIR` | `hu` 链接所在目录，默认 `~/.local/bin`（仅 macOS / Linux） |
+| `HU_DOWNLOAD_BASE` | 应用包下载地址前缀，用于镜像。目录下需要有 `hu-agent.tar.gz`、`hu-agent.zip` 及对应的 `.sha256` |
+| `HU_JRE_BASE` | JRE 下载地址前缀，用于镜像。文件名与 Adoptium 官方一致 |
+| `HU_NO_MODIFY_PATH=1` | 不修改 shell 配置文件或用户 PATH |
+
+国内访问 GitHub 慢的话，可以用 `HU_DOWNLOAD_BASE` 和 `HU_JRE_BASE` 指向自己的镜像。JRE 的 sha256 写死在脚本里，所以换了镜像也照样校验。
+
+## 使用
+
+```sh
+cd 你的项目
+hu
+```
+
+首次运行会询问三项，保存到 `~/.hu-agent/config.properties`：
+
+- 接口地址：兼容 OpenAI Chat Completions 协议即可；
+- 模型名称；
+- API Key：输入时不显示。
+
+也可以完全用环境变量配置，这时不会出现首次引导：
+
+```sh
+export HU_MODEL=gpt-4o-mini
+export HU_API_KEY=sk-...
+export HU_BASE_URL=https://api.openai.com/v1   # 可省略
+```
+
+环境变量优先于配置文件。其他设置（调用上限、超时、压缩阈值、团队模式等）见 [config.example.properties](src/main/resources/hu-agent/config.example.properties)。
+
+进入会话后：
+
+- `/help`：查看全部命令；
+- `/status`、`/tools`、`/skills`、`/mcp`：查看状态；
+- `/clear`：清空对话；
+- `/compact`：立即压缩上下文；
+- `/goal <条件>`：设定目标，未达成时自动续跑；
+- `exit`：退出。
+
+`hu --version` 查看版本，`hu --help` 查看用法。
+
+### 项目级配置
+
+当前目录下的 `.agents/` 是项目级配置：
+
+| 文件 | 作用 | 生效条件 |
+| --- | --- | --- |
+| `.agents/hook.json` | 命令 Hook | 首次使用或内容变化时需确认授权 |
+| `.agents/mcp.json` | stdio MCP server | 首次使用或内容变化时需确认授权 |
+| `.agents/skills/<名称>/SKILL.md` | 技能 | 也可以用 `/<名称>` 直接调用 |
+
+本仓库自带示例：`.agents/hook.example.json`、`.agents/mcp.example.json`、`.agents/skills/`。
+
+会话数据也写在当前目录，用到相应功能时才会创建：`.memory/`、`.tasks/`、`.schedules/`、`.workflows/`、`.transcripts/` 等。建议加入项目的 `.gitignore`。
+
+## 开发
+
+需要 JDK 17 和 Maven。Windows 可以用 `./mvnw.cmd` 代替 `mvn`；注意让 `JAVA_HOME` 指向 JDK 17。
+
+```sh
+mvn test                    # 全部测试（不需要 API Key，模型接口使用本地模拟服务）
+mvn package                 # 生成 target/hu-agent.jar（含依赖）以及发布包 target/hu-agent.zip、target/hu-agent.tar.gz
+java -jar target/hu-agent.jar        # 直接运行，配置读 ~/.hu-agent/config.properties
+mvn -q compile exec:java             # 从源码运行
+```
+
+入口是 `dev.huagent.HuMain`。和教程 S18 相比，改动在这些地方：
+
+| 位置 | 改动 |
+| --- | --- |
+| `config.HuHome` | 用户目录。启动脚本传入 `-Dhu.home`，其次读 `HU_HOME`，默认 `~/.hu-agent` |
+| `config.ProjectDirectory` | 项目目录就是当前目录，替代按编译产物定位源码工程 |
+| `config.AgentConfig` | 新增 `HU_*` 环境变量覆盖；工作目录默认为当前目录 |
+| `config.ConfigSetup` | 首次运行引导，按 `config.example.properties` 模板写入配置 |
+| `config.HuVersion` | 版本号，构建时由 Maven 写入 |
+| `HookTrustStore` / `McpTrustStore` | 授权记录改存到 `HuHome` 下 |
+
+发布包结构：`hu-agent/bin/hu`、`hu-agent/bin/hu.cmd`、`hu-agent/lib/hu-agent.jar`。启动脚本在 [src/dist/bin](src/dist/bin)，打包配置在 [src/assembly/dist.xml](src/assembly/dist.xml)。
+
+## 发布
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+推送标签后，[release 工作流](.github/workflows/release.yml) 会依次执行：
+
+1. 用标签作为版本号构建并跑全部测试；
+2. 以 prerelease 上传发布包和 sha256；
+3. 在 Linux x64、Linux arm64、macOS、Windows 上用真实安装命令安装，并做冒烟测试；
+4. 全部通过后才标记为 latest。
+
+验证失败的版本不会被默认安装。
+
+升级锁定的 JRE 时，同时修改 `install.sh` 和 `install.ps1` 里的版本号与 sha256。sha256 可以从下面的接口取，看每个平台的 `binary.package.checksum`：
+
+```text
+https://api.adoptium.net/v3/assets/release_name/eclipse/<版本，如 jdk-17.0.20.1%2B1>?image_type=jre
+```

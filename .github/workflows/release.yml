@@ -1,0 +1,80 @@
+# 推送 v* 标签后发布：构建 → 以 prerelease 上传 → 各平台用真实安装命令验证 → 通过后才标记为 latest。
+# releases/latest 不包含 prerelease，所以验证失败的版本不会被 install.sh / install.ps1 默认安装。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # 测试在 Windows 上验证过；发布包与平台无关（启动脚本的换行与权限由 assembly 固定）。
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Build and test
+        run: mvn -B package "-Drevision=${GITHUB_REF_NAME#v}"
+      - name: Checksums
+        working-directory: target
+        run: |
+          sha256sum hu-agent.zip > hu-agent.zip.sha256
+          sha256sum hu-agent.tar.gz > hu-agent.tar.gz.sha256
+      - name: Upload prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            target/hu-agent.zip
+            target/hu-agent.zip.sha256
+            target/hu-agent.tar.gz
+            target/hu-agent.tar.gz.sha256
+
+  verify-install:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      HU_VERSION: ${{ github.ref_name }}
+      # 环境变量提供模型与 api-key，跳过首次配置引导；冒烟测试只执行本地命令，不请求模型。
+      HU_MODEL: smoke-test
+      HU_API_KEY: smoke-test
+    steps:
+      - name: Install with install.sh
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.sh" | sh
+          ~/.local/bin/hu --version
+          printf '/status\n/tools\nexit\n' | ~/.local/bin/hu
+      - name: Install with install.ps1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          irm "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.ps1" | iex
+          hu --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "/status`n/tools`nexit" | hu
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+  publish:
+    needs: verify-install
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark as latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --prerelease=false --latest

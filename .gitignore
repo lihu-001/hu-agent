@@ -1,0 +1,16 @@
+target/
+/.idea/
+*.iml
+config.properties
+.env
+.env.*
+*.pem
+*.key
+# 在本仓库目录里运行 hu 时产生的会话数据
+.transcripts/
+.memory/
+.tasks/
+.schedules/
+.mailboxes/
+.worktrees/
+.workflows/

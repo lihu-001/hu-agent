@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Build and test
+        run: mvn -B package
+      - name: Smoke test the packaged jar
+        shell: bash
+        run: |
+          java -jar target/hu-agent.jar --version
+          printf '/status\nexit\n' | HU_MODEL=ci HU_API_KEY=ci HU_HOME="$RUNNER_TEMP/hu-home" java -jar target/hu-agent.jar

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 https://maven.apache.org/xsd/assembly-2.2.0.xsd">
+    <id>dist</id>
+    <formats>
+        <format>zip</format>
+        <format>tar.gz</format>
+    </formats>
+    <!-- 包内顶层目录固定为 hu-agent/，安装脚本整体移动到 HU_HOME/app。 -->
+    <includeBaseDirectory>true</includeBaseDirectory>
+    <baseDirectory>hu-agent</baseDirectory>
+    <fileSets>
+        <fileSet>
+            <directory>src/dist/bin</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>hu</include>
+            </includes>
+            <fileMode>0755</fileMode>
+            <lineEnding>unix</lineEnding>
+        </fileSet>
+        <fileSet>
+            <directory>src/dist/bin</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>hu.cmd</include>
+            </includes>
+            <lineEnding>dos</lineEnding>
+        </fileSet>
+    </fileSets>
+    <files>
+        <file>
+            <source>${project.build.directory}/${project.build.finalName}.jar</source>
+            <outputDirectory>lib</outputDirectory>
+            <destName>hu-agent.jar</destName>
+        </file>
+        <file>
+            <source>src/main/resources/hu-agent/config.example.properties</source>
+            <outputDirectory/>
+        </file>
+        <file>
+            <source>${project.build.outputDirectory}/hu-agent/version.properties</source>
+            <outputDirectory/>
+            <destName>VERSION</destName>
+        </file>
+    </files>
+</assembly>

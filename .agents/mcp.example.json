@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "example": {
+      "command": "python",
+      "args": ["examples/mcp/example_server.py"],
+      "timeout": 10,
+      "allow": ["word_count", "now"]
+    }
+  }
+}
