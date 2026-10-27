@@ -1,19 +1,18 @@
 package dev.huagent.memory;
 
 import cn.hutool.core.util.StrUtil;
+import dev.huagent.io.AtomicFiles;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -117,11 +116,7 @@ public final class MemoryStore {
         Path temp = Files.createTempFile(directory, name + "-", ".tmp");
         try {
             Files.writeString(temp, text, StandardCharsets.UTF_8);
-            try {
-                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
-            }
+            AtomicFiles.replace(temp, file);
         } finally {
             Files.deleteIfExists(temp);
         }

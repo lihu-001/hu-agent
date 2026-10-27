@@ -4,20 +4,19 @@ import cn.hutool.core.util.StrUtil;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import com.alibaba.fastjson2.JSONWriter;
+import dev.huagent.io.AtomicFiles;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.SecureRandom;
 import java.time.Instant;
@@ -119,12 +118,7 @@ public final class ScheduleStore {
         Path temp = Files.createTempFile(directory, schedule.id() + "-", ".tmp");
         try {
             Files.writeString(temp, toJson(schedule), StandardCharsets.UTF_8);
-            try {
-                Files.move(temp, fileOf(schedule.id()), StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temp, fileOf(schedule.id()), StandardCopyOption.REPLACE_EXISTING);
-            }
+            AtomicFiles.replace(temp, fileOf(schedule.id()));
         } finally {
             Files.deleteIfExists(temp);
         }

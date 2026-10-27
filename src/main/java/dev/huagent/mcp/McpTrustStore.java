@@ -3,13 +3,12 @@ package dev.huagent.mcp;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import dev.huagent.config.HuHome;
+import dev.huagent.io.AtomicFiles;
 
 import java.io.IOException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 
 /** MCP 授权记录，与 Hook 信任分开保存：批准 Hook 不等于批准启动 MCP server，反之亦然。 */
 public final class McpTrustStore {
@@ -54,12 +53,7 @@ public final class McpTrustStore {
         Path temporary = Files.createTempFile(directory, "mcp-trust-", ".tmp");
         try {
             Files.writeString(temporary, record.toJSONString());
-            try {
-                Files.move(temporary, recordFile(snapshot.project()),
-                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temporary, recordFile(snapshot.project()), StandardCopyOption.REPLACE_EXISTING);
-            }
+            AtomicFiles.replace(temporary, recordFile(snapshot.project()));
         } finally {
             Files.deleteIfExists(temporary);
         }

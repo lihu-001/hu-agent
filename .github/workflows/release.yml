@@ -11,14 +11,11 @@ permissions:
 
 jobs:
   build:
-    # 测试在 Windows 上验证过；发布包与平台无关（启动脚本的换行与权限由 assembly 固定）。
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: bash
+    # 发布包与平台无关（启动脚本的换行与权限由 assembly 固定）；Windows 上的测试由 ci 工作流覆盖。
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'

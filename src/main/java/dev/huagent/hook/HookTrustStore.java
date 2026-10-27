@@ -3,13 +3,12 @@ package dev.huagent.hook;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import dev.huagent.config.HuHome;
+import dev.huagent.io.AtomicFiles;
 
 import java.io.IOException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 
 /** 每个项目独立保存，项目配置没有可写入授权状态的字段。 */
 public final class HookTrustStore {
@@ -54,12 +53,7 @@ public final class HookTrustStore {
         Path temporary = Files.createTempFile(directory, "hook-trust-", ".tmp");
         try {
             Files.writeString(temporary, record.toJSONString());
-            try {
-                Files.move(temporary, recordFile(snapshot.project()),
-                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temporary, recordFile(snapshot.project()), StandardCopyOption.REPLACE_EXISTING);
-            }
+            AtomicFiles.replace(temporary, recordFile(snapshot.project()));
         } finally {
             Files.deleteIfExists(temporary);
         }
