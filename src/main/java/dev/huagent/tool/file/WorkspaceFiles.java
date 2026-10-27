@@ -27,19 +27,39 @@ public final class WorkspaceFiles {
 
     public Path resolve(String value) throws IOException {
         Path candidate = root.resolve(value).normalize();
-        if (!candidate.startsWith(root)) {
+        if (!candidate.startsWith(root) && !aliasesRoot(candidate)) {
             throw new IllegalArgumentException("路径超出工作目录。");
         }
         // 新文件尚不存在时，检查最近的已有祖先，避免经目录链接写到工作区外。
-        Path ancestor = candidate;
-        while (!Files.exists(ancestor, LinkOption.NOFOLLOW_LINKS)) {
-            ancestor = ancestor.getParent();
-        }
+        Path ancestor = existingAncestor(candidate);
         Path realAncestor = ancestor.toRealPath();
         if (!realAncestor.startsWith(root)) {
             throw new IllegalArgumentException("路径链接指向工作目录之外。");
         }
         return realAncestor.resolve(ancestor.relativize(candidate));
+    }
+
+    /**
+     * root 经过 toRealPath；绝对路径可能经 8.3 短文件名（如 C:\Users\RUNNER~1）或目录链接
+     * 指向工作目录，字面前缀与 root 不同。只展开与 root 同盘符或同共享的路径：UNC 路径会让 Windows 连接远程主机。
+     */
+    private boolean aliasesRoot(Path candidate) {
+        if (!root.getRoot().equals(candidate.getRoot())) {
+            return false;
+        }
+        try {
+            return existingAncestor(candidate).toRealPath().startsWith(root);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static Path existingAncestor(Path path) {
+        Path ancestor = path;
+        while (!Files.exists(ancestor, LinkOption.NOFOLLOW_LINKS)) {
+            ancestor = ancestor.getParent();
+        }
+        return ancestor;
     }
 
     String read(Path path) throws IOException {

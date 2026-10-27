@@ -226,6 +226,25 @@ class FileToolsTest {
         }
     }
 
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void permitsAbsolutePathsThroughJunctionIntoWorkspace() throws Exception {
+        // 与 8.3 短文件名同理：字面前缀不同，真实路径仍在工作目录内；本机未必有短文件名，用 junction 复现。
+        call("write_file", Map.of("path", "inside.txt", "content", "ok"));
+        Path link = temporary.resolve("workspace-alias");
+        Process process = new ProcessBuilder("cmd.exe", "/c", "mklink", "/J",
+                link.toString(), root.toString()).redirectErrorStream(true).start();
+        process.getInputStream().readAllBytes();
+        assertEquals(0, process.waitFor(), "创建临时目录 junction 应成功");
+        try {
+            assertEquals("ok", call("read_file", Map.of("path", link.resolve("inside.txt").toString())));
+            call("write_file", Map.of("path", link.resolve("new/file.txt").toString(), "content", "new"));
+            assertEquals("new", Files.readString(root.resolve("new/file.txt")));
+        } finally {
+            Files.delete(link);
+        }
+    }
+
     private String call(String name, Map<String, Object> args) throws InterruptedException {
         return tools.execute(new ToolCall("test", name, JSON.toJSONString(args)));
     }
