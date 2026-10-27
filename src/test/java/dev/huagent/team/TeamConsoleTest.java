@@ -88,6 +88,25 @@ class TeamConsoleTest {
     }
 
     @Test
+    void confirmationRedrawsLeadPromptWithConfiguredStyle() throws Exception {
+        StringWriter buffer = new StringWriter();
+        PipedWriter keyboard = new PipedWriter();
+        TeamConsole console = new TeamConsole(new BufferedReader(new PipedReader(keyboard)), new PrintWriter(buffer),
+                out -> out.print("[输入] "));
+        BufferedReader prompts = console.prompts(() -> null);
+        CompletableFuture<Boolean> approved = CompletableFuture.supplyAsync(() -> confirm(console, "alice"));
+        CompletableFuture<String> lead = CompletableFuture.supplyAsync(() -> readLine(prompts));
+        awaitText(buffer, "允许队友 alice 本次调用？");
+        keyboard.write("y\n");
+        keyboard.flush();
+        assertTrue(approved.get(5, TimeUnit.SECONDS));
+        awaitText(buffer, "[输入] ");
+        assertFalse(buffer.toString().contains("你> "), buffer.toString());
+        keyboard.close();
+        assertNull(lead.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
     void confirmationArrivingDuringLeadPromptWaitsUntilLeadReadsAgain() throws Exception {
         StringWriter buffer = new StringWriter();
         PipedWriter keyboard = new PipedWriter();

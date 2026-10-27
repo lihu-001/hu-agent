@@ -1,6 +1,7 @@
 package dev.huagent.team;
 
 import dev.huagent.compact.ContextCompactor;
+import dev.huagent.harness.ToolTrace;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.todo.TodoReminder;
 import dev.huagent.tool.ToolCall;
@@ -54,7 +55,9 @@ final class TeammateAgent {
         }
         try {
             for (int step = 1; step <= setup.maxModelCalls(); step++) {
-                say("模型请求> 第 " + step + " 次请求中...");
+                if (setup.debug()) {
+                    say("模型请求> 第 " + step + " 次请求中...");
+                }
                 List<ChatMessage> sent = request;
                 ContextCompactor compactor = setup.compactor();
                 if (compactor != null) {
@@ -78,10 +81,10 @@ final class TeammateAgent {
                 }
                 boolean limitReached = step == setup.maxModelCalls();
                 for (ToolCall call : answer.toolCalls()) {
-                    say("工具请求> " + call.name() + " [" + call.id() + "] " + call.arguments());
+                    say(ToolTrace.request(call, setup.debug()));
                     String result = limitReached ? "工具未执行：已达到本轮模型调用上限。" : setup.tools().execute(call);
                     request.add(ChatMessage.tool(call.id(), result));
-                    say("工具结果> [" + call.id() + "] " + result);
+                    say(ToolTrace.result(call, result, setup.debug()));
                 }
                 String nudge = reminder == null || limitReached ? null : reminder.afterToolBatch();
                 if (nudge != null) {

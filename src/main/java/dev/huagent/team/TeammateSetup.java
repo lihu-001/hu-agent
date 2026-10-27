@@ -13,10 +13,11 @@ import java.util.Objects;
 /**
  * 组成一个队友 Agent 的部件：模型、工具、系统提示词、Hook、可选的任务清单提醒与压缩器。
  * 每个队友一份，历史、清单与压缩状态不与 Lead 或其他队友共享；output 已带 "[name]" 前缀。
+ * debug 为 false 时（hu 默认）不显示模型请求，工具调用只显示摘要。
  */
 public record TeammateSetup(ModelClient client, ToolRegistry tools, String systemPrompt, AgentHooks hooks,
                             TodoReminder reminder, ContextCompactor compactor, int maxModelCalls,
-                            PrintWriter output) {
+                            PrintWriter output, boolean debug) {
     public TeammateSetup {
         Objects.requireNonNull(client);
         Objects.requireNonNull(tools);
@@ -26,6 +27,12 @@ public record TeammateSetup(ModelClient client, ToolRegistry tools, String syste
         if (maxModelCalls <= 0) {
             throw new IllegalArgumentException("队友每轮模型调用上限必须为正数");
         }
+    }
+
+    /** 教程入口：完整输出。 */
+    public TeammateSetup(ModelClient client, ToolRegistry tools, String systemPrompt, AgentHooks hooks,
+                         TodoReminder reminder, ContextCompactor compactor, int maxModelCalls, PrintWriter output) {
+        this(client, tools, systemPrompt, hooks, reminder, compactor, maxModelCalls, output, true);
     }
 
     /**

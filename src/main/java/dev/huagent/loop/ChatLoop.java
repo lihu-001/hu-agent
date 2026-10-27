@@ -10,12 +10,14 @@ import dev.huagent.goal.GoalController;
 import dev.huagent.goal.GoalDecision;
 import dev.huagent.harness.EventHub;
 import dev.huagent.harness.ModelRetryPolicy;
+import dev.huagent.harness.ToolTrace;
 import dev.huagent.harness.TurnEvents;
 import dev.huagent.hook.AgentHooks;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.model.ContextTooLargeException;
 import dev.huagent.model.ModelClient;
 import dev.huagent.model.ModelUnavailableException;
+import dev.huagent.prompt.PromptStyle;
 import dev.huagent.todo.TodoReminder;
 import dev.huagent.tool.AgentTool;
 import dev.huagent.tool.ShellTool;
@@ -54,6 +56,10 @@ public final class ChatLoop {
     private final GoalController goal;
     /** S18：斜杠命令；为 null 时与 S17 行为一致。 */
     private final CommandRegistry commands;
+    /** false 时（hu 默认）不显示启动工具清单、模型请求与耗时、提醒和事件送达说明，工具调用只显示摘要。 */
+    private final boolean debug;
+    /** 等待输入时的提示符样式；hu 用 FramedPrompt，其余构造器为 "你> "。 */
+    private final PromptStyle prompt;
 
     public ChatLoop(ModelClient client) {
         this(client, new ShellTool(Path.of("playground"), Duration.ofSeconds(30), 12000), 10);
@@ -124,6 +130,24 @@ public final class ChatLoop {
                     AgentHooks hooks, TodoReminder reminder, ContextCompactor compactor,
                     BackgroundManager background, EventHub events, ModelRetryPolicy retryPolicy,
                     GoalController goal, CommandRegistry commands) {
+        this(client, registry, maxModelCalls, systemPrompt, hooks, reminder, compactor, background, events,
+                retryPolicy, goal, commands, true);
+    }
+
+    /** debug 为 false 时只精简终端输出，消息历史与请求内容不变；其余构造器为 true，与之前完全相同。 */
+    public ChatLoop(ModelClient client, ToolRegistry registry, int maxModelCalls, String systemPrompt,
+                    AgentHooks hooks, TodoReminder reminder, ContextCompactor compactor,
+                    BackgroundManager background, EventHub events, ModelRetryPolicy retryPolicy,
+                    GoalController goal, CommandRegistry commands, boolean debug) {
+        this(client, registry, maxModelCalls, systemPrompt, hooks, reminder, compactor, background, events,
+                retryPolicy, goal, commands, debug, PromptStyle.plain());
+    }
+
+    /** prompt 只改变等待输入时终端上的提示符，其余构造器为 "你> "。 */
+    public ChatLoop(ModelClient client, ToolRegistry registry, int maxModelCalls, String systemPrompt,
+                    AgentHooks hooks, TodoReminder reminder, ContextCompactor compactor,
+                    BackgroundManager background, EventHub events, ModelRetryPolicy retryPolicy,
+                    GoalController goal, CommandRegistry commands, boolean debug, PromptStyle prompt) {
         if (maxModelCalls <= 0) {
             throw new IllegalArgumentException("每轮模型调用上限必须为正数");
         }
@@ -139,6 +163,8 @@ public final class ChatLoop {
         this.retryPolicy = retryPolicy;
         this.goal = goal;
         this.commands = commands;
+        this.debug = debug;
+        this.prompt = Objects.requireNonNull(prompt);
     }
 
     public void run(BufferedReader input, PrintWriter output) throws IOException {
@@ -160,15 +186,20 @@ public final class ChatLoop {
         List<ChatMessage> history = new ArrayList<>();
         history.add(new ChatMessage("system", systemPrompt));
         List<ToolDefinition> definitions = registry.definitions();
-        output.println("对话已启动，输入 exit 或 quit 退出。每次输入可触发多次工具调用。"
-                + (commands == null ? "" : "输入 /help 查看斜杠命令。"));
-        for (ToolDefinition definition : definitions) {
-            output.println("工具> " + definition.name() + "：" + definition.description());
+        // 非 debug 时由 hu 的启动横幅说明用法，工具清单可用 /tools 查看。
+        if (debug) {
+            output.println("对话已启动，输入 exit 或 quit 退出。每次输入可触发多次工具调用。"
+                    + (commands == null ? "" : "输入 /help 查看斜杠命令。"));
+            for (ToolDefinition definition : definitions) {
+                output.println("工具> " + definition.name() + "：" + definition.description());
+            }
         }
         while (true) {
-            output.print("你> ");
+            prompt.begin(output);
             output.flush();
             String line = input.readLine();
+            prompt.end(output, line);
+            output.flush();
             if (line == null || "exit".equalsIgnoreCase(line.strip()) || "quit".equalsIgnoreCase(line.strip())) {
                 output.println("对话已结束。");
                 output.flush();
@@ -291,13 +322,11 @@ public final class ChatLoop {
                             } else {
                                 appendNotices(request, scheduled, notices);
                             }
-                            output.println(scheduled.isEmpty() ? "后台> 已将完成结果交给模型"
+                            detail(output, scheduled.isEmpty() ? "后台> 已将完成结果交给模型"
                                     : "事件> 已将程序事件交给模型");
-                            output.flush();
                         }
                         // 非流式请求在完整响应前没有输出，先提示等待并在返回后报告耗时。
-                        output.println("模型请求> 第 " + step + " 次请求中...");
-                        output.flush();
+                        detail(output, "模型请求> 第 " + step + " 次请求中...");
                         List<ChatMessage> sent = request;
                         if (compactor != null) {
                             // S08：请求前整理上下文；总结后本轮之前的内容都在摘要里，本轮从摘要消息算起。
@@ -324,9 +353,8 @@ public final class ChatLoop {
                         }
                         ChatMessage answer = recovery.answer();
                         long elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000;
-                        output.println("模型响应> 耗时 " + elapsedMillis + " ms，工具调用 "
+                        detail(output, "模型响应> 耗时 " + elapsedMillis + " ms，工具调用 "
                                 + answer.toolCalls().size() + " 个");
-                        output.flush();
                         request.add(answer);
                         if (StrUtil.isNotBlank(answer.content())) {
                             output.println("助手> " + answer.content());
@@ -354,12 +382,12 @@ public final class ChatLoop {
                         }
                         boolean limitReached = step == maxModelCalls;
                         for (ToolCall call : answer.toolCalls()) {
-                            output.println("工具请求> " + call.name() + " [" + call.id() + "] " + call.arguments());
+                            output.println(ToolTrace.request(call, debug));
                             output.flush();
                             String result = limitReached ? "工具未执行：已达到本轮模型调用上限。"
                                     : registry.execute(call);
                             request.add(ChatMessage.tool(call.id(), result));
-                            output.println("工具结果> [" + call.id() + "] " + result);
+                            output.println(ToolTrace.result(call, result, debug));
                             output.flush();
                         }
                         // S05：提醒附加在本批最后一个工具结果后，不新增消息角色，协议顺序不变。
@@ -368,8 +396,7 @@ public final class ChatLoop {
                             int last = request.size() - 1;
                             ChatMessage tool = request.get(last);
                             request.set(last, ChatMessage.tool(tool.toolCallId(), tool.content() + "\n\n" + nudge));
-                            output.println("提醒> " + nudge);
-                            output.flush();
+                            detail(output, "提醒> " + nudge);
                         }
                         history = request;
                         toolsRecorded = true;
@@ -491,6 +518,14 @@ public final class ChatLoop {
     private String failureHint(boolean toolsRecorded) {
         return toolsRecorded ? "已保留工具调用和结果，已执行的操作不会回滚，请输入下一步。"
                 : "本轮未保存，请重新输入。";
+    }
+
+    /** 只在 debug 模式显示的运行细节。 */
+    private void detail(PrintWriter output, String line) {
+        if (debug) {
+            output.println(line);
+            output.flush();
+        }
     }
 
     /** 命令输出可能有多行，团队模式下队友也在写同一终端，整段加锁输出。 */

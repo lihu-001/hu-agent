@@ -280,7 +280,8 @@ public final class TeamMain {
                     output, single.mcp(), options);
         }
         // 唯一读终端的地方：此后所有确认和 Lead 的输入都从控制台的事件队列取。
-        TeamConsole console = new TeamConsole(terminal, output);
+        TeamConsole console = options == null ? new TeamConsole(terminal, output)
+                : new TeamConsole(terminal, output, options.prompt());
         BufferedReader answers = console.answers();
         List<AgentHook> userHooks = HookTrust.load(projectDirectory, answers, output, trustStore);
         McpManager mcp = mcpStarter.start(answers, output);
@@ -304,14 +305,20 @@ public final class TeamMain {
                                         CommandStarter commands)
             throws IOException {
         Consumer<String> log = line -> print(output, line);
+        // 与 ScheduleMain 相同：非 debug 时不显示启动清单、内置 Hook 日志和每次模型请求。
+        boolean debug = options == null || options.debug();
         SkillCatalog catalog = SkillCatalog.scan(projectDirectory, log);
-        print(output, "技能> 已加载目录 " + catalog.skills().size() + " 个：" + (catalog.skills().isEmpty() ? "无"
-                : String.join("、", catalog.skills().stream().map(skill -> skill.name()).toList())));
+        if (debug) {
+            print(output, "技能> 已加载目录 " + catalog.skills().size() + " 个：" + (catalog.skills().isEmpty() ? "无"
+                    : String.join("、", catalog.skills().stream().map(skill -> skill.name()).toList())));
+        }
         WorkspaceFiles files = new WorkspaceFiles(config.workDirectory());
         MemoryStore memories = new MemoryStore(files.root().resolve(MemoryStore.DIRECTORY_NAME));
         List<MemoryEntry> entries = memories.list(log);
-        print(output, "记忆> 已加载索引 " + entries.size() + " 条：" + (entries.isEmpty() ? "无"
-                : String.join("、", entries.stream().map(MemoryEntry::name).toList())));
+        if (debug) {
+            print(output, "记忆> 已加载索引 " + entries.size() + " 条：" + (entries.isEmpty() ? "无"
+                    : String.join("、", entries.stream().map(MemoryEntry::name).toList())));
+        }
         TaskStore tasks = new TaskStore(files.root().resolve(TaskStore.DIRECTORY_NAME));
         // 上次进程的队友线程已不存在：它们手上的任务退回 pending，收件箱清空。
         for (TaskRecord released : tasks.releaseAllExcept(TaskTools.DEFAULT_OWNER)) {
@@ -319,7 +326,10 @@ public final class TeamMain {
         }
         List<TaskRecord> saved = tasks.list(log);
         long completed = saved.stream().filter(task -> task.status() == TaskStatus.COMPLETED).count();
-        print(output, "任务> " + TaskStore.DIRECTORY_NAME + " 中有 " + saved.size() + " 个任务，已完成 " + completed + " 个");
+        if (debug) {
+            print(output, "任务> " + TaskStore.DIRECTORY_NAME + " 中有 " + saved.size() + " 个任务，已完成 "
+                    + completed + " 个");
+        }
         MessageBus bus = new MessageBus(files.root().resolve(MessageBus.DIRECTORY_NAME), to -> {
             if (TeamManager.LEAD.equals(to)) {
                 console.wake();
@@ -336,7 +346,7 @@ public final class TeamMain {
         // 队友：完整 Agent，每人自己的清单、压缩器和历史；没有后台、定时、记忆写入和团队管理工具。
         TeammateSetup.Factory factory = (name, role, worktree, team, memberOutput) -> {
             TodoList memberTodos = new TodoList();
-            AgentHooks hooks = hooks(memberOutput, agentCallbacks, team.taskWakeHook(), userHooks);
+            AgentHooks hooks = hooks(memberOutput, agentCallbacks, team.taskWakeHook(), userHooks, debug);
             // worktree 队友：文件工具、Shell 和路径检查都以自己的 worktree 为根；任务、收件箱与记忆仍在主目录共享。
             AgentConfig memberConfig = worktree == null ? config : config.withWorkDirectory(worktree.path());
             WorkspaceFiles memberFiles = new WorkspaceFiles(memberConfig.workDirectory());
@@ -345,10 +355,10 @@ public final class TeamMain {
             ToolRegistry childTools = ToolUseMain.createTools(memberConfig, permission, hooks,
                     List.of(new LoadSkillTool(catalog)));
             SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
-                    SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), memberOutput);
+                    SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), memberOutput, debug);
             ContextCompactor compactor = new ContextCompactor(client, transcripts, memberFiles.root(),
                     config.compactThresholdChars(), config.compactKeepToolResults(),
-                    () -> memberTodos.items().isEmpty() ? null : memberTodos.render());
+                    () -> memberTodos.items().isEmpty() ? null : memberTodos.render(), debug);
             List<AgentTool> extra = new ArrayList<>(List.of(new TodoWriteTool(memberTodos), new TaskTool(runner),
                     new LoadSkillTool(catalog), new CompactTool(compactor), new MemoryReadTool(memories)));
             extra.addAll(TaskTools.createForTeammate(tasks, name));
@@ -357,13 +367,13 @@ public final class TeamMain {
             String prompt = teammatePrompt(name, role, catalog, entries)
                     + (worktree == null ? "" : "\n\n" + worktreeRule(worktree));
             return new TeammateSetup(client, registry, prompt, hooks,
-                    new TodoReminder(memberTodos), compactor, config.maxModelCalls(), memberOutput);
+                    new TodoReminder(memberTodos), compactor, config.maxModelCalls(), memberOutput, debug);
         };
         TeamManager team = new TeamManager(bus, tasks, factory, output, idleScan,
                 new WorktreeManager(files.root()));
 
         // Lead：S12 的全部工具加四个团队工具；确认从控制台读取，与队友的确认请求依次进行。
-        AgentHooks hooks = hooks(output, agentCallbacks, team.taskWakeHook(), userHooks);
+        AgentHooks hooks = hooks(output, agentCallbacks, team.taskWakeHook(), userHooks, debug);
         // S15：哨兵轮中 Lead 的 ASK 自动拒绝，不能阻塞在等待用户输入上。
         PermissionGate gate = options == null
                 ? new PermissionGate(new PermissionPolicy(files, mcp.allowed()), answers, output)
@@ -371,12 +381,12 @@ public final class TeamMain {
                         options.events()::inSyntheticTurn);
         ToolRegistry childTools = ToolUseMain.createTools(config, gate, hooks, List.of(new LoadSkillTool(catalog)));
         SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
-                SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), output);
+                SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), output, debug);
         // S16：工作流工具只给 Lead；队友没有，子代理也没有。null 时与 S15 完全相同。
         WorkflowBinding workflow = workflows == null ? null : workflows.bind(runner, output);
         ContextCompactor compactor = new ContextCompactor(client, transcripts, files.root(),
                 config.compactThresholdChars(), config.compactKeepToolResults(),
-                () -> todos.items().isEmpty() ? null : todos.render());
+                () -> todos.items().isEmpty() ? null : todos.render(), debug);
         ShellTool backgroundShell = new ShellTool(files.root(), config.backgroundTimeout(), config.maxOutputChars());
         BackgroundManager background = new BackgroundManager(backgroundShell, log);
         ScheduleStore schedules = new ScheduleStore(files.root().resolve(ScheduleStore.DIRECTORY_NAME));
@@ -426,7 +436,7 @@ public final class TeamMain {
                 : new ChatLoop(client, registry, config.maxModelCalls(),
                         systemPrompt(catalog, entries, true) + mcp.promptSuffix() + workflowSuffix + goalSuffix,
                         hooks, new TodoReminder(todos), compactor, background, options.events(), options.retry(),
-                        goal, slash);
+                        goal, slash, options.debug(), options.prompt());
         if (startScheduler) {
             scheduleManager.start();
         }
@@ -451,11 +461,16 @@ public final class TeamMain {
         return index.isEmpty() ? base : base + "\n\n" + index + "\n记忆只能用 memory_read 读取，需要保存时请 Lead 处理。";
     }
 
-    /** Hook 顺序与 S04 相同：内置日志 → Java Hook（含任务变化唤醒）→ 用户 JSON Hook；每个成员的日志写到自己的输出。 */
+    /**
+     * Hook 顺序与 S04 相同：内置日志 → Java Hook（含任务变化唤醒）→ 用户 JSON Hook；每个成员的日志写到自己的输出。
+     * logging 为 false 时（hu 默认）不注册内置日志。
+     */
     private static AgentHooks hooks(PrintWriter output, List<? extends AgentHook> agentCallbacks, AgentHook wake,
-                                    List<AgentHook> userHooks) {
+                                    List<AgentHook> userHooks, boolean logging) {
         List<AgentHook> callbacks = new ArrayList<>();
-        callbacks.add(new LoggingHook(output));
+        if (logging) {
+            callbacks.add(new LoggingHook(output));
+        }
         callbacks.addAll(agentCallbacks);
         callbacks.add(wake);
         callbacks.addAll(userHooks);

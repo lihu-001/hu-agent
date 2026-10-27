@@ -57,6 +57,28 @@
             </resource>
         </resources>
         <plugins>
+            <!-- mvnw 按 JAVA_HOME 启动 Maven；指向旧 JDK 时增量编译可能跳过，测试才报难懂的类版本错误，这里提前拦下。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>require-jdk-17</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[17,)</version>
+                                    <message>需要 JDK 17 或更高版本运行 Maven。请把 JAVA_HOME 指向 JDK 17（当前 Java：${java.version}，${java.home}）。</message>
+                                </requireJavaVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>

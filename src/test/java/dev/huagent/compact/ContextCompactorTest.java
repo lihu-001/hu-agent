@@ -213,6 +213,16 @@ class ContextCompactorTest {
         assertSame(history, prepared.history());
     }
 
+    @Test
+    void nonDebugMicroCompactsSilently() throws Exception {
+        ContextCompactor compactor = new ContextCompactor((m, t) -> fail("不应请求总结"),
+                new TranscriptStore(root.resolve(TranscriptStore.DIRECTORY_NAME)), root, 100000, 1, null, false);
+        ContextCompactor.Prepared prepared = compactor.beforeRequest(toolHistory(3), output);
+        assertEquals(2, prepared.sent().stream().filter(m -> m.content() != null
+                && m.content().startsWith(MicroCompact.PLACEHOLDER_PREFIX)).count(), "发送内容照常微压缩");
+        assertEquals("", buffer.toString());
+    }
+
     private ContextCompactor compactor(ModelClient client, int threshold, int keep, Supplier<String> state) {
         return new ContextCompactor(client, new TranscriptStore(root.resolve(TranscriptStore.DIRECTORY_NAME)),
                 root, threshold, keep, state);

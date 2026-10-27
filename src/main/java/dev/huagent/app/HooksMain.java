@@ -73,8 +73,17 @@ public final class HooksMain {
     public static AgentHooks createHooks(Path projectDirectory, List<? extends AgentHook> agentCallbacks,
                                          HookTrustStore trustStore, BufferedReader input, PrintWriter output)
             throws IOException {
+        return createHooks(projectDirectory, agentCallbacks, trustStore, input, output, true);
+    }
+
+    /** logging 为 false 时（hu 默认）不注册内置日志，其余 Hook 不变。 */
+    public static AgentHooks createHooks(Path projectDirectory, List<? extends AgentHook> agentCallbacks,
+                                         HookTrustStore trustStore, BufferedReader input, PrintWriter output,
+                                         boolean logging) throws IOException {
         List<AgentHook> callbacks = new ArrayList<>();
-        callbacks.add(new LoggingHook(output));
+        if (logging) {
+            callbacks.add(new LoggingHook(output));
+        }
         callbacks.addAll(agentCallbacks);
         callbacks.addAll(HookTrust.load(projectDirectory, input, output, trustStore));
         return new AgentHooks(callbacks, message -> {

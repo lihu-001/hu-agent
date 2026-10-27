@@ -44,7 +44,7 @@ hu 只使用这份私有 JRE，和电脑上已装的 JDK 互不影响。
 ~/.local/bin/hu          → ~/.hu-agent/app/bin/hu（Windows 把 app\bin 加入用户 PATH）
 ```
 
-**升级**：重新运行安装命令。配置、授权记录和 JRE 都会保留。
+**升级**：运行 `hu update`（等同于重新运行安装命令，也可以直接重跑安装命令）。配置、授权记录和 JRE 都会保留。升级前先退出其他正在运行的 `hu`。
 
 **安装指定版本**：先设置环境变量 `HU_VERSION=v0.1.0`，再运行安装命令。
 
@@ -99,6 +99,8 @@ export HU_BASE_URL=https://api.openai.com/v1   # 可省略
 
 `hu --version` 查看版本，`hu --help` 查看用法。
 
+默认只显示对话、权限确认和工具调用摘要：每次工具调用占两行，一行是工具名和主要参数，下一行缩进显示结果的第一行与总行数（模型收到的仍是完整结果）。排查问题时用 `hu --debug`（或 `-d`）启动，会额外显示每次模型请求与耗时、内置 Hook 日志、微压缩、启动清单、工具调用 ID 和完整工具结果。
+
 ### 项目级配置
 
 当前目录下的 `.agents/` 是项目级配置：
@@ -122,7 +124,10 @@ mvn test                    # 全部测试（不需要 API Key，模型接口使
 mvn package                 # 生成 target/hu-agent.jar（含依赖）以及发布包 target/hu-agent.zip、target/hu-agent.tar.gz
 java -jar target/hu-agent.jar        # 直接运行，配置读 ~/.hu-agent/config.properties
 mvn -q compile exec:java             # 从源码运行
+hu update --local                    # 在源码目录执行：构建（跳过测试）并把当前源码安装为 hu 命令
 ```
+
+`hu update --local` 用仓库里的安装脚本安装 `target` 下的发布包，结果与正式安装相同，只是来源换成本地构建；之后 `hu update` 会回到最新发布版。
 
 入口是 `dev.huagent.HuMain`。和教程 S18 相比，改动在这些地方：
 

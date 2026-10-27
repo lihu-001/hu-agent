@@ -17,6 +17,9 @@ import dev.huagent.mcp.McpManager;
 import dev.huagent.mcp.McpTrustStore;
 import dev.huagent.model.ModelClient;
 import dev.huagent.model.OpenAiClient;
+import dev.huagent.prompt.FramedPrompt;
+import dev.huagent.prompt.PromptStyle;
+import dev.huagent.prompt.TerminalWidth;
 import dev.huagent.team.TeamManager;
 import dev.huagent.todo.TodoList;
 import dev.huagent.workflow.WorkflowStarter;
@@ -48,7 +51,8 @@ public final class HuMain {
         Console console = System.console();
         PrintWriter output = console == null
                 ? new PrintWriter(System.out, true, StandardCharsets.UTF_8) : console.writer();
-        if (args.length > 0) {
+        boolean debug = debugMode(args);
+        if (args.length > 0 && !debug) {
             int code = options(args, output);
             output.flush();
             if (code != 0) {
@@ -68,7 +72,7 @@ public final class HuMain {
                 output.println("hu> 未完成配置，已退出。");
                 return;
             }
-            run(AgentConfig.load(configFile, environment), input, output);
+            run(AgentConfig.load(configFile, environment), input, output, debug, promptStyle(console));
         } catch (IllegalArgumentException e) {
             failed = true;
             output.println("配置错误：" + e.getMessage());
@@ -84,7 +88,8 @@ public final class HuMain {
         }
     }
 
-    private static void run(AgentConfig config, BufferedReader input, PrintWriter output) throws IOException {
+    private static void run(AgentConfig config, BufferedReader input, PrintWriter output, boolean debug,
+                            PromptStyle prompt) throws IOException {
         ModelClient client = new OpenAiClient(config.baseUrl(), config.apiKey(), config.model(), Duration.ofSeconds(60));
         // 判断器可以单独配置一个更便宜的模型；未配置时与主 Agent 共用客户端。
         ModelClient evaluator = config.goalEvaluatorModel() == null ? client
@@ -96,7 +101,7 @@ public final class HuMain {
         // 事件到达（定时入队、后台完成唤醒）时叫醒空闲的循环。
         events.addListener(agentConsole::notifyEvents);
         HarnessOptions options = new HarnessOptions(events,
-                new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES), agentConsole.prompts());
+                new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES), agentConsole.prompts(), debug, prompt);
         TeamMain.Session session = TeamMain.createSession(config, client, agentConsole.answers(), output,
                 projectDirectory, List.of(), HookTrustStore.userStore(), new TodoList(),
                 ZoneId.systemDefault(), Clock.systemDefaultZone(), true, TeamManager.DEFAULT_IDLE_SCAN,
@@ -108,8 +113,20 @@ public final class HuMain {
                 + config.workDirectory().toAbsolutePath().normalize());
         output.println("输入 /help 查看命令，exit 退出。"
                 + (servers.isEmpty() ? "" : "MCP 已连接：" + String.join("、", servers) + "。")
-                + (session.teamEnabled() ? "团队模式已开启。" : ""));
+                + (session.teamEnabled() ? "团队模式已开启。" : "")
+                + (debug ? "调试模式已开启。" : ""));
         session.run();
+    }
+
+    /** 交互终端上用分隔线框出输入位置；输入输出被重定向（没有 Console）时保留 "你> "，日志里不出现分隔线。 */
+    static PromptStyle promptStyle(Console console) {
+        return console == null ? PromptStyle.plain()
+                : FramedPrompt.forTerminal(console.charset(), TerminalWidth.system());
+    }
+
+    /** 只有 -d / --debug 一个参数时以调试模式启动会话；其他参数交给 options。 */
+    static boolean debugMode(String[] args) {
+        return args.length == 1 && (args[0].equals("-d") || args[0].equals("--debug"));
     }
 
     /** 返回进程退出码：0 已处理，2 参数错误。 */
@@ -123,6 +140,11 @@ public final class HuMain {
             output.print(usage());
             return 0;
         }
+        // 更新要替换正在运行的 jar（Windows 上被锁定），由启动脚本在启动 Java 之前处理；走到这里说明没有经过启动脚本。
+        if (option.equals("update")) {
+            output.println("hu: update 由 hu 启动脚本执行，直接运行 jar 时不可用；请用安装后的 hu 命令，或重新运行安装命令。");
+            return 2;
+        }
         output.println("hu: 不支持的参数：" + String.join(" ", args));
         output.print(usage());
         return 2;
@@ -132,8 +154,13 @@ public final class HuMain {
         return """
                 用法：hu [选项]
                   在当前目录启动 hu-agent 交互会话；进入后输入 /help 查看命令，exit 退出。
+                      hu update [--local]
+                  更新到最新发布版（等同重新运行安装命令）；--local 在 hu-agent 源码目录中
+                  构建并安装当前源码（需要 JDK 17）。配置、授权记录和 Java 运行时都会保留。
 
                 选项：
+                  -d, --debug      调试模式：显示每次模型请求与耗时、内置 Hook 日志、微压缩、
+                                   工具调用 ID 和完整工具结果；默认只显示对话与工具调用摘要
                   -h, --help       显示本帮助
                   -v, --version    显示版本
 

@@ -1,5 +1,6 @@
 package dev.huagent.subagent;
 
+import dev.huagent.harness.ToolTrace;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.model.ModelClient;
 import dev.huagent.tool.ToolCall;
@@ -24,9 +25,16 @@ public final class SubagentRunner {
     private final int maxModelCalls;
     private final String systemPrompt;
     private final PrintWriter output;
+    /** false 时（hu 默认）不显示模型请求与完成统计，工具调用只显示摘要。 */
+    private final boolean debug;
 
     public SubagentRunner(ModelClient client, ToolRegistry tools, int maxModelCalls,
                           String systemPrompt, PrintWriter output) {
+        this(client, tools, maxModelCalls, systemPrompt, output, true);
+    }
+
+    public SubagentRunner(ModelClient client, ToolRegistry tools, int maxModelCalls,
+                          String systemPrompt, PrintWriter output, boolean debug) {
         if (maxModelCalls <= 0) {
             throw new IllegalArgumentException("子代理模型调用上限必须为正数");
         }
@@ -35,6 +43,7 @@ public final class SubagentRunner {
         this.maxModelCalls = maxModelCalls;
         this.systemPrompt = Objects.requireNonNull(systemPrompt);
         this.output = Objects.requireNonNull(output);
+        this.debug = debug;
     }
 
     public List<ToolDefinition> definitions() {
@@ -51,12 +60,16 @@ public final class SubagentRunner {
         String label = "  子代理[" + description + "]";
         int toolCalls = 0;
         for (int step = 1; step <= maxModelCalls; step++) {
-            print(label + " 模型请求> 第 " + step + " 次请求中...");
+            if (debug) {
+                print(label + " 模型请求> 第 " + step + " 次请求中...");
+            }
             ChatMessage answer = client.complete(List.copyOf(messages), definitions);
             messages.add(answer);
             if (answer.toolCalls().isEmpty()) {
                 String text = StrUtil.isBlank(answer.content()) ? "子代理结束，但没有返回文字。" : answer.content().strip();
-                print(label + " 完成> 模型请求 " + step + " 次，工具调用 " + toolCalls + " 个");
+                if (debug) {
+                    print(label + " 完成> 模型请求 " + step + " 次，工具调用 " + toolCalls + " 个");
+                }
                 return new Result(text, step, toolCalls, true);
             }
             if (step == maxModelCalls) {
@@ -64,11 +77,11 @@ public final class SubagentRunner {
                 break;
             }
             for (ToolCall call : answer.toolCalls()) {
-                print(label + " 工具请求> " + call.name() + " [" + call.id() + "] " + call.arguments());
+                print(label + " " + ToolTrace.request(call, debug));
                 String result = tools.execute(call);
                 toolCalls++;
                 messages.add(ChatMessage.tool(call.id(), result));
-                print(label + " 工具结果> [" + call.id() + "] " + result);
+                print(label + " " + ToolTrace.result(call, result, debug));
             }
         }
         print(label + " 停止> 已达到子代理模型调用上限（" + maxModelCalls + " 次）");

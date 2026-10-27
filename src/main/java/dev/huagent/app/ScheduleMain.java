@@ -183,7 +183,8 @@ public final class ScheduleMain {
                                         McpManager.Starter mcpStarter, HarnessOptions options,
                                         WorkflowStarter workflows, GoalStarter goals, CommandStarter commands)
             throws IOException {
-        AgentHooks hooks = HooksMain.createHooks(projectDirectory, agentCallbacks, trustStore, input, output);
+        AgentHooks hooks = HooksMain.createHooks(projectDirectory, agentCallbacks, trustStore, input, output,
+                options == null || options.debug());
         McpManager mcp = mcpStarter.start(input, output);
         try {
             return assemble(config, client, input, output, projectDirectory, hooks, todos, zone, clock,
@@ -200,18 +201,27 @@ public final class ScheduleMain {
                                     HarnessOptions options, WorkflowStarter workflows, GoalStarter goals,
                                     CommandStarter commands)
             throws IOException {
+        // 非 debug 时启动清单不显示（可用 /skills、/memory、/tasks 查看），扫描警告照常显示。
+        boolean debug = options == null || options.debug();
         SkillCatalog catalog = SkillCatalog.scan(projectDirectory, warning -> print(output, warning));
-        print(output, "技能> 已加载目录 " + catalog.skills().size() + " 个：" + (catalog.skills().isEmpty() ? "无"
-                : String.join("、", catalog.skills().stream().map(skill -> skill.name()).toList())));
+        if (debug) {
+            print(output, "技能> 已加载目录 " + catalog.skills().size() + " 个：" + (catalog.skills().isEmpty() ? "无"
+                    : String.join("、", catalog.skills().stream().map(skill -> skill.name()).toList())));
+        }
         WorkspaceFiles files = new WorkspaceFiles(config.workDirectory());
         MemoryStore memories = new MemoryStore(files.root().resolve(MemoryStore.DIRECTORY_NAME));
         List<MemoryEntry> entries = memories.list(warning -> print(output, warning));
-        print(output, "记忆> 已加载索引 " + entries.size() + " 条：" + (entries.isEmpty() ? "无"
-                : String.join("、", entries.stream().map(MemoryEntry::name).toList())));
+        if (debug) {
+            print(output, "记忆> 已加载索引 " + entries.size() + " 条：" + (entries.isEmpty() ? "无"
+                    : String.join("、", entries.stream().map(MemoryEntry::name).toList())));
+        }
         TaskStore tasks = new TaskStore(files.root().resolve(TaskStore.DIRECTORY_NAME));
         List<TaskRecord> saved = tasks.list(warning -> print(output, warning));
         long completed = saved.stream().filter(task -> task.status() == TaskStatus.COMPLETED).count();
-        print(output, "任务> " + TaskStore.DIRECTORY_NAME + " 中有 " + saved.size() + " 个任务，已完成 " + completed + " 个");
+        if (debug) {
+            print(output, "任务> " + TaskStore.DIRECTORY_NAME + " 中有 " + saved.size() + " 个任务，已完成 "
+                    + completed + " 个");
+        }
         // S15：哨兵轮中 ASK 自动拒绝；事件中心接收定时计划的非取消终态，后台完成只负责唤醒。
         PermissionGate gate = options == null
                 ? new PermissionGate(new PermissionPolicy(files, mcp.allowed()), input, output)
@@ -220,13 +230,13 @@ public final class ScheduleMain {
         // 子代理与 S11 相同：没有后台工具，也没有定时计划，不会在无人接收的情况下产生输出。
         ToolRegistry childTools = ToolUseMain.createTools(config, gate, hooks, List.of(new LoadSkillTool(catalog)));
         SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
-                SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), output);
+                SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), output, debug);
         // S16：工作流步骤复用同一个子代理运行器；null 时与 S15 完全相同。
         WorkflowBinding workflow = workflows == null ? null : workflows.bind(runner, output);
         TranscriptStore transcripts = new TranscriptStore(files.root().resolve(TranscriptStore.DIRECTORY_NAME));
         ContextCompactor compactor = new ContextCompactor(client, transcripts, files.root(),
                 config.compactThresholdChars(), config.compactKeepToolResults(),
-                () -> todos.items().isEmpty() ? null : todos.render());
+                () -> todos.items().isEmpty() ? null : todos.render(), debug);
         ShellTool backgroundShell = new ShellTool(files.root(), config.backgroundTimeout(), config.maxOutputChars());
         BackgroundManager background = new BackgroundManager(backgroundShell, line -> print(output, line));
         ScheduleStore schedules = new ScheduleStore(files.root().resolve(ScheduleStore.DIRECTORY_NAME));
@@ -273,7 +283,7 @@ public final class ScheduleMain {
                 : new ChatLoop(client, registry, config.maxModelCalls(),
                         systemPrompt(catalog, entries, true) + mcp.promptSuffix() + workflowSuffix + goalSuffix,
                         hooks, new TodoReminder(todos), compactor, background, options.events(), options.retry(),
-                        goal, slash);
+                        goal, slash, options.debug(), options.prompt());
         if (startScheduler) {
             scheduleManager.start();
         }

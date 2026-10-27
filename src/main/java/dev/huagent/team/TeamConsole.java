@@ -2,6 +2,7 @@ package dev.huagent.team;
 
 import dev.huagent.harness.EventHub;
 import dev.huagent.harness.TurnEvents;
+import dev.huagent.prompt.PromptStyle;
 import dev.huagent.tool.ToolCall;
 
 import java.io.BufferedReader;
@@ -48,10 +49,17 @@ public final class TeamConsole implements AutoCloseable {
     private final Set<CompletableFuture<Boolean>> open = ConcurrentHashMap.newKeySet();
     private volatile boolean closed;
     private boolean ended;
+    /** 确认问答之后重画 Lead 的提示符，与 ChatLoop 使用同一样式。 */
+    private final PromptStyle prompt;
 
     public TeamConsole(BufferedReader terminal, PrintWriter output) {
+        this(terminal, output, PromptStyle.plain());
+    }
+
+    public TeamConsole(BufferedReader terminal, PrintWriter output, PromptStyle prompt) {
         Objects.requireNonNull(terminal);
         this.output = Objects.requireNonNull(output);
+        this.prompt = Objects.requireNonNull(prompt);
         Thread pump = new Thread(() -> {
             try {
                 String line;
@@ -201,7 +209,7 @@ public final class TeamConsole implements AutoCloseable {
     /** 确认问答打断了 ChatLoop 打印的提示符，补一个，让用户知道又轮到 Lead 的输入了。 */
     private void reprompt() {
         synchronized (output) {
-            output.print("你> ");
+            prompt.begin(output);
             output.flush();
         }
     }

@@ -35,6 +35,8 @@ public final class ContextCompactor {
     private final int thresholdChars;
     private final int keepRecentToolResults;
     private final Supplier<String> state;
+    /** false 时（hu 默认）不显示微压缩说明；自动、手动与响应式总结照常显示。 */
+    private final boolean debug;
     private boolean pending;
     private String pendingFocus;
     private int reportedMicro;
@@ -42,6 +44,11 @@ public final class ContextCompactor {
     /** state 提供压缩后需原样保留的程序状态（如任务清单），返回空白或为 null 时不附加。 */
     public ContextCompactor(ModelClient client, TranscriptStore store, Path workDirectory, int thresholdChars,
                             int keepRecentToolResults, Supplier<String> state) {
+        this(client, store, workDirectory, thresholdChars, keepRecentToolResults, state, true);
+    }
+
+    public ContextCompactor(ModelClient client, TranscriptStore store, Path workDirectory, int thresholdChars,
+                            int keepRecentToolResults, Supplier<String> state, boolean debug) {
         if (thresholdChars <= 0 || keepRecentToolResults < 0) {
             throw new IllegalArgumentException("压缩阈值必须为正数，保留的工具结果数不能为负");
         }
@@ -51,6 +58,7 @@ public final class ContextCompactor {
         this.thresholdChars = thresholdChars;
         this.keepRecentToolResults = keepRecentToolResults;
         this.state = state;
+        this.debug = debug;
     }
 
     public int thresholdChars() {
@@ -91,7 +99,7 @@ public final class ContextCompactor {
                 replaced++;
             }
         }
-        if (replaced > reportedMicro) {
+        if (debug && replaced > reportedMicro) {
             print(output, "压缩> 微压缩：本次请求中 " + replaced + " 个较早的工具结果以占位说明代替");
         }
         reportedMicro = replaced;

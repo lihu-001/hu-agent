@@ -15,6 +15,42 @@ done
 app_dir=$(cd "$(dirname "$self")/.." && pwd)
 hu_home=$(cd "$app_dir/.." && pwd)
 
+# hu update：重新运行安装脚本（默认装最新发布版；--local 装当前目录的源码）。
+# 安装会整体替换 app 目录，本脚本已经打开的是旧文件，继续执行不受影响。
+if [ "${1:-}" = update ]; then
+    export HU_HOME="$hu_home"
+    # 通过链接启动（~/.local/bin/hu）时，让安装脚本更新同一位置的链接。
+    if [ -L "$0" ]; then
+        HU_BIN_DIR=$(cd "$(dirname "$0")" && pwd)
+        export HU_BIN_DIR
+    fi
+    if [ $# -eq 1 ]; then
+        # 先完整下载再执行：curl 失败时不会把空脚本交给 sh 而误报成功。
+        installer=$(curl -fsSL https://raw.githubusercontent.com/lihu-001/hu-agent/main/install.sh) || {
+            echo "hu: 下载安装脚本失败" >&2
+            exit 1
+        }
+        printf '%s\n' "$installer" | sh
+        exit
+    fi
+    if [ $# -eq 2 ] && [ "$2" = --local ]; then
+        if [ ! -f src/dist/bin/hu ] || [ ! -f install.sh ]; then
+            echo "hu: 请在 hu-agent 源码目录中运行 hu update --local" >&2
+            exit 2
+        fi
+        sh ./mvnw -q package -DskipTests
+        if command -v sha256sum >/dev/null 2>&1; then
+            (cd target && sha256sum hu-agent.tar.gz > hu-agent.tar.gz.sha256)
+        else
+            (cd target && shasum -a 256 hu-agent.tar.gz > hu-agent.tar.gz.sha256)
+        fi
+        HU_DOWNLOAD_BASE="file://$(pwd | sed 's/ /%20/g')/target" HU_VERSION=local sh ./install.sh
+        exit
+    fi
+    echo "hu: 用法：hu update [--local]" >&2
+    exit 2
+fi
+
 java_cmd=${HU_JAVA:-$hu_home/runtime/bin/java}
 if [ ! -x "$java_cmd" ]; then
     echo "hu: 找不到 Java 运行时 ${java_cmd}，请重新运行安装命令。" >&2
