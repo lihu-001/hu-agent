@@ -13,6 +13,7 @@ import dev.huagent.hook.HookTrustStore;
 import dev.huagent.mcp.McpManager;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.model.ModelClient;
+import dev.huagent.permission.AutoApprove;
 import dev.huagent.skill.SkillCatalog;
 import dev.huagent.todo.TodoItem;
 import dev.huagent.todo.TodoList;
@@ -283,6 +284,22 @@ class CommandLoopTest {
         assertTrue(output.contains("团队模式已开启（0 个队友）"), output);
         assertTrue(output.contains("团队 PostToolUse：任务图变化时唤醒空闲队友"), output);
         assertTrue(mainRequests.isEmpty());
+    }
+
+    @Test
+    void autoCommandOnlyWhenHuPassesSwitchAndStatusShowsIt() throws Exception {
+        AutoApprove autoApprove = new AutoApprove(false);
+        String output = runWith(CommandStarter.builtin(null, autoApprove), "/status\n/auto\n/status\nexit\n", 6, false, 8);
+        assertTrue(output.contains("状态> 自动审批模式未开启"), output);
+        assertTrue(output.contains("审批> 已开启"), output);
+        assertTrue(output.contains("状态> 自动审批模式已开启"), output);
+        assertTrue(autoApprove.enabled());
+        assertTrue(mainRequests.isEmpty(), "命令不请求模型");
+
+        // 教程入口没有开关：/auto 是未知命令，/status 不提自动审批。
+        String tutorial = run("/auto\n/status\nexit\n", 6, false);
+        assertTrue(tutorial.contains("未知命令 /auto"), tutorial);
+        assertFalse(tutorial.contains("自动审批模式"), tutorial);
     }
 
     // ---- 脚本与组装辅助 ----

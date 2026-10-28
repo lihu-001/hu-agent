@@ -18,6 +18,7 @@ import dev.huagent.hook.HookTrustStore;
 import dev.huagent.mcp.McpManager;
 import dev.huagent.mcp.McpTrustStore;
 import dev.huagent.permission.ConfirmPrompt;
+import dev.huagent.permission.AutoApprove;
 import dev.huagent.model.ModelClient;
 import dev.huagent.model.ModelClients;
 import dev.huagent.prompt.FramedPrompt;
@@ -59,8 +60,8 @@ public final class HuMain {
         Console console = System.console();
         PrintWriter output = console == null
                 ? new PrintWriter(System.out, true, StandardCharsets.UTF_8) : console.writer();
-        boolean debug = debugMode(args);
-        if (args.length > 0 && !debug) {
+        SessionFlags flags = sessionFlags(args);
+        if (flags == null) {
             int code = options(args, output);
             output.flush();
             if (code != 0) {
@@ -68,6 +69,9 @@ public final class HuMain {
             }
             return;
         }
+        boolean debug = flags.debug();
+        // Lead、子代理与队友的权限检查、输入栏和 /auto、/status 共用这一个开关。
+        AutoApprove autoApprove = new AutoApprove(flags.autoApprove());
         BufferedReader input = new BufferedReader(console == null
                 ? new InputStreamReader(System.in, StandardCharsets.UTF_8) : console.reader());
         LineEditor editor = null;
@@ -99,14 +103,14 @@ public final class HuMain {
                 input = title.input(editor.input());
             }
             IntSupplier columns = editor == null ? TerminalWidth.system() : editor::columns;
-            PromptStyle prompt = promptStyle(console, config, columns);
+            PromptStyle prompt = promptStyle(console, config, columns, autoApprove);
             // 补全要用会话装配出的注册表（含技能命令）。
             CommandStarter commands = (sources, warnings) -> {
-                CommandRegistry bound = CommandStarter.builtin(defaults).bind(sources, warnings);
+                CommandRegistry bound = CommandStarter.builtin(defaults, autoApprove).bind(sources, warnings);
                 registry.set(bound);
                 return bound;
             };
-            run(config, input, output, debug, title == null ? prompt : title.prompt(prompt),
+            run(config, input, output, debug, autoApprove, title == null ? prompt : title.prompt(prompt),
                     confirmPrompt(console, debug), splash(console, columns), commands, editor != null);
         } catch (IllegalArgumentException e) {
             failed = true;
@@ -127,8 +131,8 @@ public final class HuMain {
     }
 
     private static void run(AgentConfig config, BufferedReader input, PrintWriter output, boolean debug,
-                            PromptStyle prompt, ConfirmPrompt confirm, String splash, CommandStarter commands,
-                            boolean completion)
+                            AutoApprove autoApprove, PromptStyle prompt, ConfirmPrompt confirm, String splash,
+                            CommandStarter commands, boolean completion)
             throws IOException {
         // 启动页先于会话装配输出：MCP server 启动可能较慢，Hook 与 MCP 的授权确认也排在它下面。
         if (splash != null) {
@@ -147,7 +151,7 @@ public final class HuMain {
         events.addListener(agentConsole::notifyEvents);
         HarnessOptions options = new HarnessOptions(events,
                 new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES), agentConsole.prompts(), debug, prompt,
-                confirm);
+                confirm, autoApprove);
         TeamMain.Session session = TeamMain.createSession(config, client, agentConsole.answers(), output,
                 projectDirectory, List.of(), HookTrustStore.userStore(), new TodoList(),
                 ZoneId.systemDefault(), Clock.systemDefaultZone(), true, TeamManager.DEFAULT_IDLE_SCAN,
@@ -161,6 +165,10 @@ public final class HuMain {
                 + (servers.isEmpty() ? "" : "MCP 已连接：" + String.join("、", servers) + "。")
                 + (session.teamEnabled() ? "团队模式已开启。" : "")
                 + (debug ? "调试模式已开启。" : ""));
+        if (autoApprove.enabled()) {
+            output.println("自动审批模式已开启：需要确认的工具调用（Shell、写文件、MCP 工具等）自动批准，"
+                    + "硬拒绝规则与工作目录检查仍然生效；/auto off 关闭。");
+        }
         session.run();
     }
 
@@ -168,9 +176,10 @@ public final class HuMain {
      * 交互终端上在输入上方画分隔线标出用户输入，线上显示模型与上下文用量（最大值取 model.properties 的 max-context-tokens）；
      * 输入输出被重定向（没有 Console）时保留 "你> "，日志里不出现分隔线。
      */
-    static PromptStyle promptStyle(Console console, AgentConfig config, IntSupplier columns) {
+    static PromptStyle promptStyle(Console console, AgentConfig config, IntSupplier columns, AutoApprove autoApprove) {
         return console == null ? PromptStyle.plain()
-                : FramedPrompt.forTerminal(console.charset(), columns, config.model(), config.maxContextTokens());
+                : FramedPrompt.forTerminal(console.charset(), columns, config.model(), config.maxContextTokens(),
+                        autoApprove::enabled);
     }
 
     /**
@@ -186,9 +195,24 @@ public final class HuMain {
         return console == null ? null : Splash.forTerminal(console.charset(), columns.getAsInt(), HuVersion.current());
     }
 
-    /** 只有 -d / --debug 一个参数时以调试模式启动会话；其他参数交给 options。 */
-    static boolean debugMode(String[] args) {
-        return args.length == 1 && (args[0].equals("-d") || args[0].equals("--debug"));
+    /** 启动会话的选项：-d / --debug 与 --auto 可以同时给出。 */
+    record SessionFlags(boolean debug, boolean autoApprove) {
+    }
+
+    /** 没有参数或只有会话选项时返回启动会话的选项；有其他参数时返回 null，交给 options。 */
+    static SessionFlags sessionFlags(String[] args) {
+        boolean debug = false;
+        boolean autoApprove = false;
+        for (String arg : args) {
+            switch (arg) {
+                case "-d", "--debug" -> debug = true;
+                case "--auto" -> autoApprove = true;
+                default -> {
+                    return null;
+                }
+            }
+        }
+        return new SessionFlags(debug, autoApprove);
     }
 
     /** 返回进程退出码：0 已处理，2 参数错误。 */
@@ -224,6 +248,9 @@ public final class HuMain {
                 选项：
                   -d, --debug      调试模式：显示每次模型请求与耗时、内置 Hook 日志、微压缩、
                                    中间回复、工具调用与完整工具结果；默认只显示对话与最终回答
+                      --auto       自动审批模式：需要确认的工具调用（Shell、写文件、
+                                   MCP 工具等）自动批准，硬拒绝规则与工作目录检查仍然生效；
+                                   会话中用 /auto 切换；可与 -d 同时使用
                   -h, --help       显示本帮助
                   -v, --version    显示版本
 

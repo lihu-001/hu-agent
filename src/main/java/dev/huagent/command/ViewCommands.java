@@ -8,6 +8,7 @@ import dev.huagent.mcp.McpConfig;
 import dev.huagent.mcp.McpManager;
 import dev.huagent.memory.MemoryEntry;
 import dev.huagent.memory.MemoryStore;
+import dev.huagent.permission.AutoApprove;
 import dev.huagent.schedule.ScheduleRecord;
 import dev.huagent.schedule.ScheduleStore;
 import dev.huagent.skill.Skill;
@@ -31,8 +32,9 @@ final class ViewCommands {
     private ViewCommands() {
     }
 
-    static List<SlashCommand> create(CommandSources sources) {
-        List<SlashCommand> commands = new ArrayList<>(List.of(status(sources), tools(), skills(sources),
+    /** autoApprove 为 null 时（教程入口）/status 不提自动审批模式。 */
+    static List<SlashCommand> create(CommandSources sources, AutoApprove autoApprove) {
+        List<SlashCommand> commands = new ArrayList<>(List.of(status(sources, autoApprove), tools(), skills(sources),
                 mcp(sources), hooks(sources), memory(sources), todos(sources), tasks(sources), background(sources),
                 schedules(sources)));
         if (sources.workflows() != null) {
@@ -46,7 +48,7 @@ final class ViewCommands {
     }
 
     /** api-key 只说明已配置，不显示任何字符。 */
-    static SlashCommand status(CommandSources sources) {
+    static SlashCommand status(CommandSources sources, AutoApprove autoApprove) {
         return SlashCommand.local("status", "查看模型、工作目录、各项上限与已启用的机制", (argument, context) -> {
             AgentConfig config = sources.config();
             StringBuilder text = new StringBuilder("状态> 模型 ").append(sources.currentModel());
@@ -68,6 +70,9 @@ final class ViewCommands {
                             : "已开启（" + sources.team().names().size() + " 个队友）")
                     .append("；MCP server ").append(sources.mcp().servers().size()).append(" 个；工作流")
                     .append(sources.workflows() == null ? "未启用" : "已启用")
+                    .append(autoApprove == null ? "" : autoApprove.enabled()
+                            ? "\n状态> 自动审批模式已开启：需要确认的工具调用自动批准，硬拒绝规则仍生效；/auto off 关闭"
+                            : "\n状态> 自动审批模式未开启：需要确认的工具调用逐次询问；/auto on 开启")
                     .append("\n状态> 配置来自 ").append(HuHome.modelFile()).append("、").append(HuHome.configFile())
                     .append(" 与 HU_* 环境变量，文件修改后需重启；/model 可列出与切换模型。");
             return CommandResult.print(text.toString());

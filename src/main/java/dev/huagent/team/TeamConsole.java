@@ -118,6 +118,14 @@ public final class TeamConsole implements AutoCloseable {
         }
     }
 
+    /** 队友线程调用：自动审批模式自动批准时只显示一行记录，不排队、不等待回答。 */
+    public void approved(String member, String reason, ToolCall call) {
+        synchronized (output) {
+            confirmPrompt.approved(output, reason, call, member);
+            output.flush();
+        }
+    }
+
     /** 收件箱有新消息时调用（任意线程）；只是提示，消息本身仍在文件里。 */
     public void wake() {
         events.add(new Wake());

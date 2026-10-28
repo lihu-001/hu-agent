@@ -89,6 +89,18 @@ class FramedPromptTest {
     }
 
     @Test
+    void ruleLeadsWithAutoApproveWhileItIsOn() {
+        boolean[] autoApprove = {true};
+        FramedPrompt prompt = new FramedPrompt("❯ ", '─', () -> 60, "glm-4.6", 0, () -> autoApprove[0]);
+        assertEquals("── 自动审批 ── glm-4.6 " + "─".repeat(36), prompt.rule());
+        // 每次画线现取：/auto off 之后下一次提示符就不再显示。
+        autoApprove[0] = false;
+        assertEquals("── glm-4.6 " + "─".repeat(48), prompt.rule());
+        FramedPrompt labelOnly = new FramedPrompt("> ", '-', () -> 20, null, 0, () -> true);
+        assertEquals("-- 自动审批 " + "-".repeat(7), labelOnly.rule());
+    }
+
+    @Test
     void narrowTerminalFallsBackToPlainRule() {
         FramedPrompt prompt = new FramedPrompt("❯ ", '─', () -> 20, "glm-4.6", 1_000_000);
         prompt.context(0);

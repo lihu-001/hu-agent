@@ -20,6 +20,7 @@ public final class ConfirmPrompt {
     /** 参数显示超过这个列数（中文占两列）时问题另起一行。 */
     static final int INLINE_COLUMNS = 200;
     private static final String LABEL = "【权限确认】";
+    private static final String APPROVED_LABEL = "【自动批准】";
 
     private final boolean compact;
     private final boolean color;
@@ -57,6 +58,23 @@ public final class ConfirmPrompt {
             output.println();
         }
         output.print("  " + paint("33", question + "[y/N]") + " ");
+    }
+
+    /**
+     * 自动审批时的记录，不提问、以换行结束；member 是队友名，Lead 与子代理为 null。
+     * full 与 ask 相同列出原因、工具与调用 ID、参数，最后一行说明已自动批准；
+     * compact 为一行 "【自动批准】工具：参数"，队友的调用在工具名前加 "[名字] "。调用方负责加锁与 flush。
+     */
+    public void approved(PrintWriter output, String reason, ToolCall call, String member) {
+        String who = member == null ? "" : "[" + member + "] ";
+        if (!compact) {
+            output.println("权限确认> " + who + reason);
+            output.println("工具> " + call.name() + " [" + call.id() + "]");
+            output.println("参数> " + call.arguments());
+            output.println("自动审批模式，已自动批准。");
+            return;
+        }
+        output.println(paint("1;33", APPROVED_LABEL) + who + paint("1", call.name()) + "：" + detail(call.arguments()));
     }
 
     /**

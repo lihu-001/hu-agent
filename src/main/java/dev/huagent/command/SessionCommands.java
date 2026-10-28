@@ -8,6 +8,7 @@ import dev.huagent.goal.GoalCommand;
 import dev.huagent.goal.GoalController;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.model.ModelSelection;
+import dev.huagent.permission.AutoApprove;
 import dev.huagent.tool.ToolDefinition;
 
 import java.io.IOException;
@@ -23,12 +24,15 @@ final class SessionCommands {
     private SessionCommands() {
     }
 
-    /** defaults 为 null 时 /model 只在本次会话切换，见 model。 */
-    static List<SlashCommand> create(CommandSources sources, ModelDefaults defaults) {
+    /** defaults 为 null 时 /model 只在本次会话切换，见 model；autoApprove 为 null 时（教程入口）没有 /auto。 */
+    static List<SlashCommand> create(CommandSources sources, ModelDefaults defaults, AutoApprove autoApprove) {
         List<SlashCommand> commands = new ArrayList<>(List.of(exit(), model(sources, defaults), clear(sources),
                 compact(sources), context(sources), export(sources)));
         if (sources.goal() != null) {
             commands.add(goal(sources.goal()));
+        }
+        if (autoApprove != null) {
+            commands.add(autoApprove(autoApprove));
         }
         return commands;
     }
@@ -122,6 +126,34 @@ final class SessionCommands {
         } catch (IOException e) {
             return "默认模型写入失败（" + e.getClass().getSimpleName() + "），仅本次会话生效。";
         }
+    }
+
+    /**
+     * 切换自动审批模式（见 AutoApprove）：不带参数在开、关之间切换，on / off 直接指定。
+     * 从下一次权限检查起生效，正在等待回答的确认不受影响；不请求模型，也不改变对话。
+     */
+    static SlashCommand autoApprove(AutoApprove autoApprove) {
+        return SlashCommand.localWithArgument("auto", "/auto [on | off]",
+                "自动审批：需要确认的工具调用自动批准，硬拒绝仍生效；不带参数切换开关", (argument, context) -> {
+            boolean enable;
+            switch (argument) {
+                case "" -> enable = !autoApprove.enabled();
+                case "on" -> enable = true;
+                case "off" -> enable = false;
+                default -> {
+                    return CommandResult.print("审批> 用法：/auto [on | off]，不带参数时切换开关。");
+                }
+            }
+            if (enable == autoApprove.enabled()) {
+                return CommandResult.print("审批> 已经" + (enable ? "开启" : "关闭") + "，无需切换。");
+            }
+            autoApprove.set(enable);
+            return CommandResult.print(enable
+                    ? "审批> 已开启：需要确认的工具调用（Shell、写文件、MCP 工具等）自动批准并显示一行记录，"
+                            + "子代理、队友与程序事件发起的轮次也一样；硬拒绝规则与工作目录检查仍然生效。/auto off 关闭。"
+                    : "审批> 已关闭：需要确认的工具调用恢复逐次询问。");
+        }).withChoices(() -> List.of(new SlashCommand.Choice("on", "开启：权限确认自动批准"),
+                new SlashCommand.Choice("off", "关闭：恢复逐次确认")));
     }
 
     /** 失败原因只取异常消息（ModelHttp 的消息不含响应正文），没有消息时用异常类名。 */

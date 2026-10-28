@@ -1,6 +1,7 @@
 package dev.huagent.command;
 
 import dev.huagent.config.ModelDefaults;
+import dev.huagent.permission.AutoApprove;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -23,9 +24,14 @@ public interface CommandStarter {
 
     /** 同 builtin()；defaults 不为 null 时（hu）/model 把能确认存在的模型写回配置文件作为默认。 */
     static CommandStarter builtin(ModelDefaults defaults) {
+        return builtin(defaults, null);
+    }
+
+    /** 同 builtin(defaults)；autoApprove 不为 null 时（hu）另有 /auto，/status 显示自动审批模式是否开启。 */
+    static CommandStarter builtin(ModelDefaults defaults, AutoApprove autoApprove) {
         return (sources, warnings) -> {
-            List<SlashCommand> commands = new ArrayList<>(SessionCommands.create(sources, defaults));
-            commands.addAll(ViewCommands.create(sources));
+            List<SlashCommand> commands = new ArrayList<>(SessionCommands.create(sources, defaults, autoApprove));
+            commands.addAll(ViewCommands.create(sources, autoApprove));
             commands.addAll(SkillCommands.create(sources.catalog(), warnings));
             return new CommandRegistry(commands, warnings);
         };

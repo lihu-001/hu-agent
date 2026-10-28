@@ -351,7 +351,8 @@ public final class TeamMain {
             AgentConfig memberConfig = worktree == null ? config : config.withWorkDirectory(worktree.path());
             WorkspaceFiles memberFiles = new WorkspaceFiles(memberConfig.workDirectory());
             TeammatePermission permission = new TeammatePermission(
-                    worktree == null ? policy : new PermissionPolicy(memberFiles), console, name);
+                    worktree == null ? policy : new PermissionPolicy(memberFiles), console, name,
+                    options == null ? null : options.autoApprove());
             ToolRegistry childTools = ToolUseMain.createTools(memberConfig, permission, hooks,
                     List.of(new LoadSkillTool(catalog)));
             SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
@@ -374,11 +375,11 @@ public final class TeamMain {
 
         // Lead：S12 的全部工具加四个团队工具；确认从控制台读取，与队友的确认请求依次进行。
         AgentHooks hooks = hooks(output, agentCallbacks, team.taskWakeHook(), userHooks, debug);
-        // S15：哨兵轮中 Lead 的 ASK 自动拒绝，不能阻塞在等待用户输入上。
+        // S15：哨兵轮中 Lead 的 ASK 自动拒绝，不能阻塞在等待用户输入上（hu 的自动审批模式开启时自动批准）。
         PermissionGate gate = options == null
                 ? new PermissionGate(new PermissionPolicy(files, mcp.allowed()), answers, output)
                 : new PermissionGate(new PermissionPolicy(files, mcp.allowed()), answers, output,
-                        options.events()::inSyntheticTurn, options.confirm());
+                        options.events()::inSyntheticTurn, options.confirm(), options.autoApprove());
         ToolRegistry childTools = ToolUseMain.createTools(config, gate, hooks, List.of(new LoadSkillTool(catalog)));
         SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
                 SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), output, debug);

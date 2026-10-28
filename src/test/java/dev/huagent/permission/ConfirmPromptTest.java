@@ -54,6 +54,26 @@ class ConfirmPromptTest {
                 shown);
     }
 
+    @Test
+    void approvedIsOneFinishedLineAndNamesTheTeammate() {
+        ToolCall call = new ToolCall("c", "shell", "{\"command\":\"ls\"}");
+        String n = System.lineSeparator();
+        assertEquals("【自动批准】shell：ls" + n, approved(ConfirmPrompt.compact(false), call, null));
+        assertEquals("【自动批准】[alice] shell：ls" + n, approved(ConfirmPrompt.compact(false), call, "alice"));
+        assertEquals("\u001b[1;33m【自动批准】\u001b[0m\u001b[1mshell\u001b[0m：ls" + n,
+                approved(ConfirmPrompt.compact(true), call, null));
+        assertEquals("权限确认> [alice] 需要确认" + n + "工具> shell [c]" + n + "参数> {\"command\":\"ls\"}" + n
+                + "自动审批模式，已自动批准。" + n, approved(ConfirmPrompt.full(), call, "alice"));
+    }
+
+    private static String approved(ConfirmPrompt confirm, ToolCall call, String member) {
+        StringWriter buffer = new StringWriter();
+        PrintWriter output = new PrintWriter(buffer);
+        confirm.approved(output, "需要确认", call, member);
+        output.flush();
+        return buffer.toString();
+    }
+
     private static String ask(ConfirmPrompt confirm, ToolCall call) {
         StringWriter buffer = new StringWriter();
         PrintWriter output = new PrintWriter(buffer);

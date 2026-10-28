@@ -9,11 +9,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class HuMainTest {
     @Test
-    void debugFlagStartsSessionInDebugMode() {
-        assertTrue(HuMain.debugMode(new String[]{"--debug"}));
-        assertTrue(HuMain.debugMode(new String[]{"-d"}));
-        assertFalse(HuMain.debugMode(new String[]{}), "默认非 debug");
-        assertFalse(HuMain.debugMode(new String[]{"--debug", "x"}));
+    void sessionFlagsCombineDebugAndAuto() {
+        assertEquals(new HuMain.SessionFlags(false, false), HuMain.sessionFlags(new String[]{}), "默认非 debug、不自动审批");
+        assertEquals(new HuMain.SessionFlags(true, false), HuMain.sessionFlags(new String[]{"--debug"}));
+        assertEquals(new HuMain.SessionFlags(true, false), HuMain.sessionFlags(new String[]{"-d"}));
+        assertEquals(new HuMain.SessionFlags(false, true), HuMain.sessionFlags(new String[]{"--auto"}));
+        assertEquals(new HuMain.SessionFlags(true, true), HuMain.sessionFlags(new String[]{"--auto", "-d"}));
+        // 有其他参数时交给 options（版本、帮助或报错），不启动会话。
+        assertNull(HuMain.sessionFlags(new String[]{"--debug", "x"}));
+        assertNull(HuMain.sessionFlags(new String[]{"--version"}));
+        assertNull(HuMain.sessionFlags(new String[]{"-s"}), "--auto 没有短选项");
     }
 
     @Test
@@ -22,6 +27,7 @@ class HuMainTest {
         assertEquals(2, HuMain.options(new String[]{"--debug", "x"}, new PrintWriter(buffer, true)));
         assertTrue(buffer.toString().contains("不支持的参数：--debug x"), buffer.toString());
         assertTrue(HuMain.usage().contains("-d, --debug"));
+        assertTrue(HuMain.usage().contains("--auto"));
     }
 
     @Test

@@ -16,6 +16,8 @@ public final class PermissionGate implements ToolPermission {
     private final BooleanSupplier asyncTurn;
     /** 确认提示的样式；hu 默认为 compact，其余构造器为 full，与之前相同。 */
     private final ConfirmPrompt confirm;
+    /** hu 的自动审批模式；为 null 或关闭时与之前相同。 */
+    private final AutoApprove autoApprove;
 
     public PermissionGate(PermissionPolicy policy, BufferedReader input, PrintWriter output) {
         this(policy, input, output, null);
@@ -28,11 +30,17 @@ public final class PermissionGate implements ToolPermission {
 
     public PermissionGate(PermissionPolicy policy, BufferedReader input, PrintWriter output,
                           BooleanSupplier asyncTurn, ConfirmPrompt confirm) {
+        this(policy, input, output, asyncTurn, confirm, null);
+    }
+
+    public PermissionGate(PermissionPolicy policy, BufferedReader input, PrintWriter output,
+                          BooleanSupplier asyncTurn, ConfirmPrompt confirm, AutoApprove autoApprove) {
         this.policy = policy;
         this.input = input;
         this.output = output;
         this.asyncTurn = asyncTurn;
         this.confirm = Objects.requireNonNull(confirm);
+        this.autoApprove = autoApprove;
     }
 
     @Override
@@ -43,6 +51,14 @@ public final class PermissionGate implements ToolPermission {
         }
         if (decision.action() == PermissionPolicy.Action.DENY) {
             return decision.reason();
+        }
+        // 自动审批：不读终端，程序事件发起的轮次同样放行；硬拒绝已在上面返回。
+        if (autoApprove != null && autoApprove.enabled()) {
+            synchronized (output) {
+                confirm.approved(output, decision.reason(), call, null);
+                output.flush();
+            }
+            return null;
         }
         if (asyncTurn != null && asyncTurn.getAsBoolean()) {
             return "本消息由程序事件自动发起，用户可能不在终端旁，交互确认被拒绝；"

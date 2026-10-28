@@ -1,6 +1,7 @@
 package dev.huagent.harness;
 
 import dev.huagent.permission.ConfirmPrompt;
+import dev.huagent.permission.AutoApprove;
 import dev.huagent.prompt.PromptStyle;
 
 import java.io.BufferedReader;
@@ -13,13 +14,19 @@ import java.io.BufferedReader;
  * 工具调用与中间回复（见 ToolTrace）；为 true 时与教程入口的完整输出相同。
  * prompt 是 Lead 等待输入时的提示符样式，hu 交互会话用 FramedPrompt，其余为 "你> "。
  * confirm 是权限确认的样式：debug 时为原来的多行（full），否则为一行（compact），hu 在能解释 ANSI 的终端上带颜色。
+ * autoApprove 是 Lead、子代理与队友共用的自动审批模式开关（见 AutoApprove）；只有 hu 会打开，其余入口始终关闭。
  */
 public record HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug,
-                             PromptStyle prompt, ConfirmPrompt confirm) {
+                             PromptStyle prompt, ConfirmPrompt confirm, AutoApprove autoApprove) {
     public HarnessOptions {
-        if (events == null || retry == null || prompt == null || confirm == null) {
-            throw new IllegalArgumentException("HarnessOptions 的 events、retry、prompt 与 confirm 不能为空");
+        if (events == null || retry == null || prompt == null || confirm == null || autoApprove == null) {
+            throw new IllegalArgumentException("HarnessOptions 的 events、retry、prompt、confirm 与 autoApprove 不能为空");
         }
+    }
+
+    public HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug,
+                          PromptStyle prompt, ConfirmPrompt confirm) {
+        this(events, retry, loopInput, debug, prompt, confirm, new AutoApprove(false));
     }
 
     public HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug) {

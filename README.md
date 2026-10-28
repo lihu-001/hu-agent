@@ -116,6 +116,7 @@ export HU_BASE_URL=https://example.com/v1     # 官方接口可省略
 - `/clear`：清空对话；
 - `/compact`：立即压缩上下文；
 - `/goal <条件>`：设定目标，未达成时自动续跑；
+- `/auto`：切换自动审批模式，`/auto on`、`/auto off` 直接指定，见下文；
 - `exit`：退出。
 
 `/model` 的模型列表：`model.properties` 里 `models=` 列出的常用模型排在最前（逗号分隔，可选），其后是接口 `<base-url>/models` 返回的全部模型（Anthropic 协议为 `/v1/models`）。接口列表在会话开始时后台查询一次，不影响启动；接口不提供模型列表时只列常用模型。
@@ -123,6 +124,8 @@ export HU_BASE_URL=https://example.com/v1     # 官方接口可省略
 `/model <名称>` 切换后写回启动时读取模型的文件（`model.properties` 的 `model`；旧版写法写 `config.properties` 的 `openai.model`），只改这一行，下次启动沿用。为了不把拼错的名字留到下次启动，只有常用模型或接口列表里有的模型才写回，其他名称只在本次会话生效；设置了环境变量 `HU_MODEL` 时也只在本次会话生效。接口、密钥与 token 上限（`max-context-tokens`、`max-output-tokens`）不随模型变化。
 
 切换后，共用客户端的子代理、队友、上下文压缩与默认目标判断器从后续请求起使用新模型；已发出的请求和 `goal.evaluator-model` 单独指定的判断器不变。`/status` 与输入栏同步显示当前模型；旧模型的上下文用量清除，等待新请求返回 usage 后更新。命令本身不请求模型、不触发 Hook、不进入对话历史。
+
+自动审批模式：`hu --auto` 启动时开启（可与 `-d` 同时使用），会话中用 `/auto` 随时切换。开启后，原本要逐次确认的工具调用（Shell、写文件、后台命令、MCP 工具、写记忆、创建队友等）自动批准，不再停下来等 `y`，每次只显示一行记录，如 `【自动批准】shell：mvn test`。主 Agent、子代理、工作流步骤、队友，以及定时计划或后台完成唤醒的轮次都一样。以下照常拒绝：硬拒绝规则（`sudo`、关机、`rm -rf /`、直接读写磁盘等），工作目录之外的路径，没有权限规则的工具。Hook 与 MCP 配置的信任确认是启动时对项目配置的一次性授权，不受影响。开启时输入栏分隔线最前面显示 `自动审批`，`/status` 也会说明。只在可信的项目里使用。
 
 `hu --version` 查看版本，`hu --help` 查看用法。
 

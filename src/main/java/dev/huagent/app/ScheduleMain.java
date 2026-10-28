@@ -222,11 +222,12 @@ public final class ScheduleMain {
             print(output, "任务> " + TaskStore.DIRECTORY_NAME + " 中有 " + saved.size() + " 个任务，已完成 "
                     + completed + " 个");
         }
-        // S15：哨兵轮中 ASK 自动拒绝；事件中心接收定时计划的非取消终态，后台完成只负责唤醒。
+        // S15：哨兵轮中 ASK 自动拒绝（hu 的自动审批模式开启时自动批准）；事件中心接收定时计划的非取消终态，
+        // 后台完成只负责唤醒。
         PermissionGate gate = options == null
                 ? new PermissionGate(new PermissionPolicy(files, mcp.allowed()), input, output)
                 : new PermissionGate(new PermissionPolicy(files, mcp.allowed()), input, output,
-                        options.events()::inSyntheticTurn, options.confirm());
+                        options.events()::inSyntheticTurn, options.confirm(), options.autoApprove());
         // 子代理与 S11 相同：没有后台工具，也没有定时计划，不会在无人接收的情况下产生输出。
         ToolRegistry childTools = ToolUseMain.createTools(config, gate, hooks, List.of(new LoadSkillTool(catalog)));
         SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),

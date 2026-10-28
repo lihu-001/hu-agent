@@ -2,14 +2,18 @@ package dev.huagent.prompt;
 
 import java.io.PrintWriter;
 import java.nio.charset.Charset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntSupplier;
 
 /**
  * 只在每次输入上方画一条分隔线：空一行、分隔线、提示符 "❯ "，用户回车后空一行再输出回复。
  * 分隔线只标出用户输入，回复与工具输出前后都不画线，两者靠分隔线与 "❯ " 区分。
- * 分隔线里嵌入状态："── 模型 ── 上下文剩余 998.2K（99%）/ 最大 1M token ─────"。最大值来自 max-context-tokens（model.properties），
+ * 分隔线里嵌入状态："── 模型 ── 上下文剩余 998.2K（99%）/ 最大 1M token ─────"，自动审批模式开启时最前面加 "自动审批 ── "。
+ * 最大值来自 max-context-tokens（model.properties），
  * 用量由 ChatLoop 经 context 告知（接口 usage）；用量未知时只显示最大值，终端太窄放不下时退回不带状态的分隔线。
  * 只输出普通字符、不移动光标：Windows 上 Java 不会开启控制台的 ANSI 处理。
  * 分隔线每次按终端当前列数重新计算，比整行少一列，避免写满一行时部分终端再多换一行。
@@ -28,6 +32,8 @@ public final class FramedPrompt implements PromptStyle {
     private final int maxContextTokens;
     /** TeamConsole 在另一线程重画提示符，读到的是最近一次 context 的结果。 */
     private volatile int usedTokens = -1;
+    /** 为 true 时分隔线最前面显示 "自动审批"，每次画线时现取（/auto 随时切换）。 */
+    private final BooleanSupplier autoApprove;
 
     public FramedPrompt(String marker, char rule, IntSupplier columns) {
         this(marker, rule, columns, null, 0);
@@ -35,11 +41,17 @@ public final class FramedPrompt implements PromptStyle {
 
     /** model 为 null 或空白时分隔线不显示模型；maxContextTokens 不为正时不显示上下文。 */
     public FramedPrompt(String marker, char rule, IntSupplier columns, String model, int maxContextTokens) {
+        this(marker, rule, columns, model, maxContextTokens, () -> false);
+    }
+
+    public FramedPrompt(String marker, char rule, IntSupplier columns, String model, int maxContextTokens,
+                        BooleanSupplier autoApprove) {
         this.marker = Objects.requireNonNull(marker);
         this.rule = rule;
         this.columns = Objects.requireNonNull(columns);
         this.model = normalizeModel(model);
         this.maxContextTokens = maxContextTokens;
+        this.autoApprove = Objects.requireNonNull(autoApprove);
     }
 
     private static String normalizeModel(String model) {
@@ -51,9 +63,14 @@ public final class FramedPrompt implements PromptStyle {
      * 同时避开 GBK 控制台把制表符按两列显示、分隔线折行的问题。
      */
     public static FramedPrompt forTerminal(Charset charset, IntSupplier columns, String model, int maxContextTokens) {
+        return forTerminal(charset, columns, model, maxContextTokens, () -> false);
+    }
+
+    public static FramedPrompt forTerminal(Charset charset, IntSupplier columns, String model, int maxContextTokens,
+                                           BooleanSupplier autoApprove) {
         return charset.newEncoder().canEncode("❯─")
-                ? new FramedPrompt("❯ ", '─', columns, model, maxContextTokens)
-                : new FramedPrompt("> ", '-', columns, model, maxContextTokens);
+                ? new FramedPrompt("❯ ", '─', columns, model, maxContextTokens, autoApprove)
+                : new FramedPrompt("> ", '-', columns, model, maxContextTokens, autoApprove);
     }
 
     @Override
@@ -83,10 +100,19 @@ public final class FramedPrompt implements PromptStyle {
     String rule() {
         int width = Math.max(MIN_RULE, columns.getAsInt() - 1);
         String bar = String.valueOf(rule).repeat(LEAD);
-        String context = context();
+        List<String> parts = new ArrayList<>();
+        if (autoApprove.getAsBoolean()) {
+            parts.add("自动审批");
+        }
         String currentModel = model;
-        String status = currentModel == null ? context
-                : context == null ? currentModel : currentModel + " " + bar + " " + context;
+        if (currentModel != null) {
+            parts.add(currentModel);
+        }
+        String context = context();
+        if (context != null) {
+            parts.add(context);
+        }
+        String status = parts.isEmpty() ? null : String.join(" " + bar + " ", parts);
         if (status != null) {
             String head = bar + " " + status + " ";
             int used = displayWidth(head);
