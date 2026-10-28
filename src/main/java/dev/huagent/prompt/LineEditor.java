@@ -1,27 +1,37 @@
 package dev.huagent.prompt;
 
 import dev.huagent.command.SlashCommand;
+import org.jline.keymap.KeyMap;
+import org.jline.reader.Binding;
 import org.jline.reader.Candidate;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
+import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
 import org.jline.reader.Widget;
 import org.jline.reader.impl.LineReaderImpl;
+import org.jline.terminal.Attributes;
 import org.jline.terminal.MouseEvent;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.jline.utils.AttributedString;
+import org.jline.utils.AttributedStyle;
+import org.jline.utils.NonBlockingReader;
 
 import java.io.BufferedReader;
 import java.io.IOError;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.PrintWriter;
 import java.io.Reader;
 import java.io.Writer;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -34,11 +44,26 @@ import java.util.function.Supplier;
  * 读取开始时交给 JLine 当作提示符画出；读取期间其他线程（后台任务、定时计划、队友）的整行输出经 printAbove
  * 插到输入行上方，不打乱正在输入的内容。读取只在有人等待输入时进行（InputPump），模型回复期间不显示提示符。
  *
+ * <p>Esc 与 Ctrl+C 与 Claude Code 相同。输入时：输入行有内容时 Esc 连按两次（800 ms 内）清空，清掉的内容进历史、↑ 可找回，
+ * 第一次在输入行下方提示再按一次；Ctrl+C 清空输入行并提示再按一次退出，800 ms 内再按结束输入。
+ * 任务运行中（taskRunning，见 TurnInterrupt）：Esc 或 Ctrl+C 中断任务，连按两次 Ctrl+C 在任务结束后退出；
+ * 确认问答里按下时以空回答（拒绝）结束确认并中断任务。任务期间不显示输入行，由监听线程读按键，
+ * 键入的文字攒起来，回到提示符时填进输入行。Ctrl+C 一直作为按键读取，不产生信号，Shell 命令与 MCP server 不会收到。
+ *
  * <p>取不到系统终端时 open 返回 null，调用方继续用 Console 按行读取。
  */
 public final class LineEditor implements AutoCloseable {
     /** 读取期间经 callWidget 写出控制序列：拿着 JLine 的锁，不会插进输入行重画的转义序列中间。 */
     private static final String CONTROL_WIDGET = "hu-control";
+    private static final String ESCAPE_WIDGET = "hu-escape";
+    /** 提示到期后由计时线程经 callWidget 收起。 */
+    private static final String HINT_WIDGET = "hu-hint";
+    static final String CLEAR_HINT = "再按一次 Esc 清空输入";
+    static final String EXIT_HINT = "再按一次 Ctrl+C 退出";
+    private static final int ESC = 0x1b;
+    private static final int CTRL_C = 0x03;
+    /** 任务期间监听线程每次最多等这么久的按键；确认问答开始读取时最多等这么久它交出终端。 */
+    private static final long POLL_MILLIS = 50;
     /** 第一次设置标题前把原标题压栈（XTPUSHTITLE）。 */
     private static final String SAVE_TITLE = "\u001b[22;0t";
     /** 先清空标题，不支持标题栈的终端由此回到默认标题；支持的终端随后出栈恢复原标题（XTPOPTITLE）。 */
@@ -49,9 +74,36 @@ public final class LineEditor implements AutoCloseable {
     private final SlashMenu menu;
     private final PromptWriter writer = new PromptWriter();
     private final PrintWriter output = new PrintWriter(writer, true);
+    private final LongSupplier nanoTime;
+    private final DoublePress escape;
+    private final DoublePress interrupt;
+    private volatile Runnable interruptTask = () -> { };
+    /** 本次读取开始时有任务在运行，即任务中的确认问答；只在读取线程上访问。 */
+    private boolean answering;
+
+    /** 以下字段由 keys 保护：读取线程、监听线程与报告任务状态的主线程都会访问。 */
+    private final Object keys = new Object();
+    private boolean task;
+    private boolean lineOpen;
+    /** 监听线程正在读终端；开始读取一行前等它读完手上这一下。 */
+    private boolean polling;
+    private boolean closed;
+    /** 任务期间连按了两次 Ctrl+C：之后的输入提示符直接结束输入。 */
+    private boolean quitting;
+    /** 任务期间进入原始模式之前的终端模式；为 null 表示没有进入。 */
+    private Attributes cooked;
+    /** 任务期间键入的文字，回到提示符时填进输入行。 */
+    private final StringBuilder typeAhead = new StringBuilder();
 
     LineEditor(Terminal terminal, Supplier<? extends Collection<SlashCommand>> commands) {
+        this(terminal, commands, System::nanoTime);
+    }
+
+    LineEditor(Terminal terminal, Supplier<? extends Collection<SlashCommand>> commands, LongSupplier nanoTime) {
         this.terminal = Objects.requireNonNull(terminal);
+        this.nanoTime = Objects.requireNonNull(nanoTime);
+        this.escape = new DoublePress(nanoTime);
+        this.interrupt = new DoublePress(nanoTime);
         this.menu = new SlashMenu(new SlashCompleter(commands));
         this.reader = new MenuReader(terminal, menu);
         // 原样返回输入：不展开 !! 之类的历史引用，也不把反斜杠当转义去掉（Windows 路径）。
@@ -74,10 +126,28 @@ public final class LineEditor implements AutoCloseable {
             terminal.flush();
             return true;
         });
+        // 单独的 Esc 要等 JLine 的歧义超时（默认 100 ms）确认后面没有按键序列；两下来得更快时读成 ESC ESC。
+        KeyMap<Binding> main = reader.getKeyMaps().get(LineReader.MAIN);
+        main.bind(new Reference(ESCAPE_WIDGET), KeyMap.esc(), KeyMap.esc() + KeyMap.esc());
+        reader.getWidgets().put(ESCAPE_WIDGET, this::escape);
+        // Ctrl+C 在 JLine 的原始模式下是按键（绑定 interrupt），替换掉原来的结束读取。
+        reader.getWidgets().put(LineReader.INTERRUPT, this::interruptKey);
+        reader.getWidgets().put(HINT_WIDGET, () -> {
+            if (reader.hintExpired(nanoTime.getAsLong())) {
+                reader.hint(null, 0);
+                reader.redisplay(true);
+            }
+            return true;
+        });
+        Thread watcher = new Thread(this::watch, "terminal-keys");
+        watcher.setDaemon(true);
+        watcher.start();
     }
 
     /** 打开系统终端；不是交互终端或平台不支持时返回 null。 */
     public static LineEditor open(Supplier<? extends Collection<SlashCommand>> commands) {
+        // JLine 默认在原始模式下读到 Ctrl+C 时另外模拟一次 INT 信号，读取中会被它打断；这里只要按键。
+        System.setProperty(TerminalBuilder.PROP_SOFTWARE_SIGNALS, "false");
         Terminal terminal;
         try {
             terminal = TerminalBuilder.builder().system(true).dumb(false).build();
@@ -96,23 +166,32 @@ public final class LineEditor implements AutoCloseable {
         return output;
     }
 
-    /** 每次 readLine 读一行，以 output 中尚未换行的提示语作为提示符；输入结束（Ctrl+D、空行上 Ctrl+C）时返回 null。 */
+    /**
+     * 每次 readLine 读一行，以 output 中尚未换行的提示语作为提示符；输入结束（空行上 Ctrl+D、连按两次 Ctrl+C）时返回 null。
+     * 不在任务中时，任务期间键入的文字预先填进输入行。
+     */
     public BufferedReader input() {
         return new BufferedReader(Reader.nullReader()) {
             @Override
             public String readLine() throws IOException {
                 String prompt = writer.beginRead();
                 try {
+                    String typed = beginLine();
+                    if (typed == null) {
+                        return null;
+                    }
+                    reader.hint(null, 0);
                     while (true) {
                         try {
                             // JLine 把提示符里的 % 当作格式（%N、%{…%} 等，未知的直接丢掉），
                             // 确认提示里有模型给出的命令，必须原样显示。
-                            return reader.readLine(prompt.replace("%", "%%"));
+                            return reader.readLine(prompt.replace("%", "%%"), null, (Character) null, typed);
                         } catch (UserInterruptException e) {
-                            // Ctrl+C：清掉已输入的内容重新读；空行上按下时与 Ctrl+D 一样结束输入。
+                            // 只剩外部发来的 INT 信号（Ctrl+C 是按键，见 interruptKey）：有内容时清掉重读，空行上结束输入。
                             if (e.getPartialLine() == null || e.getPartialLine().isEmpty()) {
                                 return null;
                             }
+                            typed = null;
                         }
                     }
                 } catch (EndOfFileException e) {
@@ -120,10 +199,37 @@ public final class LineEditor implements AutoCloseable {
                 } catch (IOError e) {
                     throw new IOException(e);
                 } finally {
+                    endLine();
                     writer.endRead();
                 }
             }
         };
+    }
+
+    /** 任务中按 Esc 或 Ctrl+C 时调用 action（hu 接到 TurnInterrupt.request）；在读按键的线程上调用。 */
+    public void onInterrupt(Runnable action) {
+        interruptTask = Objects.requireNonNull(action);
+    }
+
+    /**
+     * 任务开始（true）与结束（false）；见 TurnInterrupt。任务期间没有读取时终端处于原始模式，由监听线程读按键；
+     * 正在读取（确认问答，或事件轮开始时用户还在输入）时等读取结束再切换。
+     */
+    public void taskRunning(boolean running) {
+        synchronized (keys) {
+            task = running;
+            if (!lineOpen) {
+                switchMode();
+            }
+            keys.notifyAll();
+        }
+    }
+
+    /** 任务期间攒下、回到提示符时填进输入行的文字。 */
+    String typedAhead() {
+        synchronized (keys) {
+            return typeAhead.toString();
+        }
     }
 
     /** 终端当前列数，窗口缩放后跟着变；取不到时为 TerminalWidth.DEFAULT。 */
@@ -143,8 +249,213 @@ public final class LineEditor implements AutoCloseable {
     /** 恢复终端标题与终端模式；之后的输出丢弃（只剩退出时的守护线程）。 */
     @Override
     public void close() {
+        synchronized (keys) {
+            closed = true;
+            keys.notifyAll();
+        }
         writer.close();
         closeQuietly(terminal);
+    }
+
+    /**
+     * 开始读取一行：等监听线程交出终端，记下是不是任务中的确认问答。
+     * 返回要预先填进输入行的文字；任务期间连按过两次 Ctrl+C 时返回 null，不再读取。
+     */
+    private String beginLine() throws InterruptedIOException {
+        synchronized (keys) {
+            lineOpen = true;
+            try {
+                while (polling) {
+                    keys.wait();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new InterruptedIOException("等待按键监听结束时被中断");
+            }
+            answering = task;
+            if (task) {
+                return "";
+            }
+            if (quitting) {
+                return null;
+            }
+            String typed = typeAhead.toString();
+            typeAhead.setLength(0);
+            return typed;
+        }
+    }
+
+    private void endLine() {
+        synchronized (keys) {
+            lineOpen = false;
+            answering = false;
+            switchMode();
+            keys.notifyAll();
+        }
+    }
+
+    /** 没有读取时按任务状态切换终端模式：任务期间为原始模式（不回显、按键逐个可读）。调用方持有 keys，且没有读取。 */
+    private void switchMode() {
+        if (closed) {
+            // 终端关闭时已恢复原来的模式。
+            return;
+        }
+        if (task && cooked == null) {
+            cooked = terminal.enterRawMode();
+        } else if (!task && cooked != null) {
+            terminal.setAttributes(cooked);
+            cooked = null;
+        }
+    }
+
+    /** Esc：确认问答里中断任务；输入行有内容时连按两次清空（清掉的内容进历史），第一次提示再按一次。 */
+    private boolean escape() {
+        if (answering) {
+            return cancelAnswer();
+        }
+        String text = reader.getBuffer().toString();
+        if (text.isEmpty()) {
+            escape.reset();
+            return true;
+        }
+        // 两下来得比 JLine 的歧义超时还快时读成一个 ESC ESC 序列，算连按。
+        if (!KeyMap.esc().equals(reader.getLastBinding()) || escape.press()) {
+            escape.reset();
+            reader.getHistory().add(text);
+            reader.getBuffer().clear();
+            reader.hint(null, 0);
+        } else {
+            hint(CLEAR_HINT);
+        }
+        return true;
+    }
+
+    /** Ctrl+C：确认问答里中断任务；否则清空输入行并提示再按一次退出，800 ms 内再按结束输入。 */
+    private boolean interruptKey() {
+        if (answering) {
+            pressInterruptInTask();
+            return cancelAnswer();
+        }
+        if (interrupt.press()) {
+            return reader.exit();
+        }
+        reader.getBuffer().clear();
+        hint(EXIT_HINT);
+        return true;
+    }
+
+    /** 任务中的确认问答：先请求中断（TurnInterrupt 等回答读完再中断任务线程），再以空回答（拒绝）结束这次确认。 */
+    private boolean cancelAnswer() {
+        interruptTask.run();
+        reader.getBuffer().clear();
+        return reader.submit();
+    }
+
+    /** 任务中按 Ctrl+C：连按两次时记下退出，任务结束后的提示符直接结束输入。 */
+    private void pressInterruptInTask() {
+        if (interrupt.press()) {
+            synchronized (keys) {
+                quitting = true;
+            }
+        }
+    }
+
+    /** 在输入行下方显示一行提示，与连按的等待时间一起到期，到期后收起。在 JLine 的锁下调用。 */
+    private void hint(String text) {
+        long deadline = nanoTime.getAsLong() + TimeUnit.MILLISECONDS.toNanos(DoublePress.WINDOW_MILLIS);
+        reader.hint(text, deadline);
+        CompletableFuture.delayedExecutor(DoublePress.WINDOW_MILLIS + 20, TimeUnit.MILLISECONDS).execute(() -> {
+            try {
+                reader.callWidget(HINT_WIDGET);
+            } catch (IllegalStateException e) {
+                // 读取已经结束，提示随输入行一起收起了。
+            }
+        });
+    }
+
+    /** 监听线程：任务期间且没有读取时逐个读按键（见 key）。 */
+    private void watch() {
+        NonBlockingReader in = terminal.reader();
+        while (true) {
+            synchronized (keys) {
+                while (!closed && (!task || lineOpen)) {
+                    try {
+                        keys.wait();
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                }
+                if (closed) {
+                    return;
+                }
+                polling = true;
+            }
+            try {
+                int c = in.read(POLL_MILLIS);
+                if (c == NonBlockingReader.EOF) {
+                    return;
+                }
+                if (c >= 0) {
+                    key(in, c);
+                }
+            } catch (IOException e) {
+                // 终端不可读：不再监听，任务仍可正常结束。
+                return;
+            } finally {
+                synchronized (keys) {
+                    polling = false;
+                    keys.notifyAll();
+                }
+            }
+        }
+    }
+
+    /** 任务期间的一个按键：Esc 与 Ctrl+C 中断任务；可见字符与退格攒成回到提示符时的输入，其他按键丢弃。 */
+    private void key(NonBlockingReader in, int c) throws IOException {
+        if (c == CTRL_C) {
+            pressInterruptInTask();
+            interruptTask.run();
+        } else if (c == ESC) {
+            // 方向键等按键序列以 Esc 开头、后面紧跟其余字符；单独的 Esc 之后在歧义超时内没有字符。
+            int next = in.read(LineReaderImpl.DEFAULT_AMBIGUOUS_BINDING);
+            if (next < 0 || next == ESC) {
+                interruptTask.run();
+            } else {
+                skipSequence(in, next);
+            }
+        } else {
+            synchronized (keys) {
+                typed(c);
+            }
+        }
+    }
+
+    /** 读完一个按键序列：CSI（Esc [ … 终止字符）与 SS3（Esc O x）；其余是 Alt 组合键，第二个字符已经读掉。 */
+    private static void skipSequence(NonBlockingReader in, int next) throws IOException {
+        if (next == 'O') {
+            in.read(LineReaderImpl.DEFAULT_AMBIGUOUS_BINDING);
+        } else if (next == '[') {
+            for (int i = 0; i < 32; i++) {
+                int c = in.read(LineReaderImpl.DEFAULT_AMBIGUOUS_BINDING);
+                if (c < 0 || c >= 0x40 && c <= 0x7e) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /** 调用方持有 keys。退格删掉最后一个字（含代理对），回车与其他控制字符丢弃。 */
+    private void typed(int c) {
+        int length = typeAhead.length();
+        if (c == 0x7f || c == '\b') {
+            if (length > 0) {
+                boolean pair = length > 1 && Character.isSurrogatePair(typeAhead.charAt(length - 2),
+                        typeAhead.charAt(length - 1));
+                typeAhead.setLength(length - (pair ? 2 : 1));
+            }
+        } else if (!Character.isISOControl(c)) {
+            typeAhead.append((char) c);
+        }
     }
 
     /** 命令列表显示时按键先交给 action；列表不显示或 action 不处理（返回 false）时照常执行原来的功能。 */
@@ -285,11 +596,15 @@ public final class LineEditor implements AutoCloseable {
     /**
      * 每次重画前按输入刷新命令列表：显示时放在输入行下方（post 区域），并开启鼠标跟踪以接收滚轮；
      * 不显示时关闭跟踪，终端照常选择文字、滚动回看。post 正被 JLine 自己使用（如 Ctrl+R 搜索）时不显示列表。
-     * 列表的状态只在 JLine 的锁下读写：按键、重画和其他线程的 printAbove 都拿着这把锁。
+     * 连按提示（如 "再按一次 Esc 清空输入"）也放在 post，显示期间代替列表。
+     * 列表与提示的状态只在 JLine 的锁下读写：按键、重画和其他线程的 printAbove、callWidget 都拿着这把锁。
      */
     private static final class MenuReader extends LineReaderImpl {
         private final SlashMenu menu;
         private final Supplier<AttributedString> view;
+        private final Supplier<AttributedString> hintView;
+        private AttributedString hint;
+        private long hintDeadline;
         private boolean tracking;
         /** 结束读取前的最后一次重画不带列表，留在屏幕上的只有输入行。 */
         private boolean finishing;
@@ -298,6 +613,7 @@ public final class LineEditor implements AutoCloseable {
             super(terminal, "hu", new HashMap<>());
             this.menu = menu;
             this.view = menu::render;
+            this.hintView = () -> hint;
         }
 
         /** 列表正显示在输入行下方。 */
@@ -305,16 +621,46 @@ public final class LineEditor implements AutoCloseable {
             return post == view;
         }
 
+        /** 显示（text 为 null 时收起）输入行下方的提示，deadline（nanoTime）之后由 hintExpired 判断到期。 */
+        void hint(String text, long deadline) {
+            lock.lock();
+            try {
+                hint = text == null ? null : new AttributedString(text, AttributedStyle.DEFAULT.faint());
+                hintDeadline = deadline;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        boolean hintExpired(long now) {
+            return hint != null && now - hintDeadline >= 0;
+        }
+
+        /** 以当前输入（可以为空）结束这次读取。 */
+        boolean submit() {
+            return acceptLine();
+        }
+
+        /** 结束这次读取，readLine 抛出 EndOfFileException，与空行上按 Ctrl+D 相同。 */
+        boolean exit() {
+            state = State.EOF;
+            return true;
+        }
+
         @Override
         protected void redisplay(boolean flush) {
             lock.lock();
             try {
-                boolean show = !finishing
+                boolean free = post == null || post == view || post == hintView;
+                boolean note = !finishing && hint != null && free;
+                boolean show = !finishing && !note
                         && menu.update(buf.toString(), buf.cursor() == buf.length(), size.getColumns(), size.getRows())
-                        && (post == null || post == view);
-                if (show) {
+                        && free;
+                if (note) {
+                    post = hintView;
+                } else if (show) {
                     post = view;
-                } else if (post == view) {
+                } else if (post == view || post == hintView) {
                     post = null;
                 }
                 if (show != tracking) {

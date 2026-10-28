@@ -14,6 +14,7 @@ import dev.huagent.harness.AgentConsole;
 import dev.huagent.harness.EventHub;
 import dev.huagent.harness.HarnessOptions;
 import dev.huagent.harness.ModelRetryPolicy;
+import dev.huagent.harness.TurnInterrupt;
 import dev.huagent.hook.HookTrustStore;
 import dev.huagent.mcp.McpManager;
 import dev.huagent.mcp.McpTrustStore;
@@ -102,6 +103,12 @@ public final class HuMain {
                 output = editor.output();
                 input = title.input(editor.input());
             }
+            // 任务运行中按 Esc 或 Ctrl+C 中断（与 Claude Code 相同）：行编辑器在任务期间读按键，交给 ChatLoop 结束本轮。
+            TurnInterrupt interrupt = new TurnInterrupt();
+            if (editor != null) {
+                editor.onInterrupt(interrupt::request);
+                interrupt.addListener(editor::taskRunning);
+            }
             IntSupplier columns = editor == null ? TerminalWidth.system() : editor::columns;
             PromptStyle prompt = promptStyle(console, config, columns, autoApprove);
             // 补全要用会话装配出的注册表（含技能命令）。
@@ -111,7 +118,7 @@ public final class HuMain {
                 return bound;
             };
             run(config, input, output, debug, autoApprove, title == null ? prompt : title.prompt(prompt),
-                    confirmPrompt(console, debug), splash(console, columns), commands, editor != null);
+                    confirmPrompt(console, debug), splash(console, columns), commands, editor != null, interrupt);
         } catch (IllegalArgumentException e) {
             failed = true;
             output.println("配置错误：" + e.getMessage());
@@ -132,7 +139,7 @@ public final class HuMain {
 
     private static void run(AgentConfig config, BufferedReader input, PrintWriter output, boolean debug,
                             AutoApprove autoApprove, PromptStyle prompt, ConfirmPrompt confirm, String splash,
-                            CommandStarter commands, boolean completion)
+                            CommandStarter commands, boolean completion, TurnInterrupt interrupt)
             throws IOException {
         // 启动页先于会话装配输出：MCP server 启动可能较慢，Hook 与 MCP 的授权确认也排在它下面。
         if (splash != null) {
@@ -151,8 +158,10 @@ public final class HuMain {
         events.addListener(agentConsole::notifyEvents);
         HarnessOptions options = new HarnessOptions(events,
                 new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES), agentConsole.prompts(), debug, prompt,
-                confirm, autoApprove);
-        TeamMain.Session session = TeamMain.createSession(config, client, agentConsole.answers(), output,
+                confirm, autoApprove, interrupt);
+        // 单 Agent 模式的确认在主线程上读这里；中断请求等回答读完再中断主线程（见 TurnInterrupt.answers）。
+        BufferedReader answers = interrupt.answers(agentConsole.answers());
+        TeamMain.Session session = TeamMain.createSession(config, client, answers, output,
                 projectDirectory, List.of(), HookTrustStore.userStore(), new TodoList(),
                 ZoneId.systemDefault(), Clock.systemDefaultZone(), true, TeamManager.DEFAULT_IDLE_SCAN,
                 McpManager.Starter.of(projectDirectory, McpTrustStore.userStore(), System.getenv()),
@@ -161,7 +170,8 @@ public final class HuMain {
         String location = "模型 " + config.model() + "（" + config.modelConfig().provider().label() + "）· 工作目录 "
                 + config.workDirectory().toAbsolutePath().normalize();
         output.println(splash == null ? "hu-agent " + HuVersion.current() + " · " + location : location);
-        output.println((completion ? "输入 / 列出命令，Tab 或 ↑↓ 选择" : "输入 /help 查看命令") + "，exit 退出。"
+        output.println((completion ? "输入 / 列出命令，Tab 或 ↑↓ 选择，运行中按 Esc 中断" : "输入 /help 查看命令")
+                + "，exit 退出。"
                 + (servers.isEmpty() ? "" : "MCP 已连接：" + String.join("、", servers) + "。")
                 + (session.teamEnabled() ? "团队模式已开启。" : "")
                 + (debug ? "调试模式已开启。" : ""));

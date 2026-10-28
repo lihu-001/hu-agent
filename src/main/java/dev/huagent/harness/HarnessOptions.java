@@ -15,13 +15,22 @@ import java.io.BufferedReader;
  * prompt 是 Lead 等待输入时的提示符样式，hu 交互会话用 FramedPrompt，其余为 "你> "。
  * confirm 是权限确认的样式：debug 时为原来的多行（full），否则为一行（compact），hu 在能解释 ANSI 的终端上带颜色。
  * autoApprove 是 Lead、子代理与队友共用的自动审批模式开关（见 AutoApprove）；只有 hu 会打开，其余入口始终关闭。
+ * interrupt 让 Lead 的一轮可被用户中断（见 TurnInterrupt）；只有 hu 接上行编辑器的按键，其余入口不会有中断请求。
  */
 public record HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug,
-                             PromptStyle prompt, ConfirmPrompt confirm, AutoApprove autoApprove) {
+                             PromptStyle prompt, ConfirmPrompt confirm, AutoApprove autoApprove,
+                             TurnInterrupt interrupt) {
     public HarnessOptions {
-        if (events == null || retry == null || prompt == null || confirm == null || autoApprove == null) {
-            throw new IllegalArgumentException("HarnessOptions 的 events、retry、prompt、confirm 与 autoApprove 不能为空");
+        if (events == null || retry == null || prompt == null || confirm == null || autoApprove == null
+                || interrupt == null) {
+            throw new IllegalArgumentException(
+                    "HarnessOptions 的 events、retry、prompt、confirm、autoApprove 与 interrupt 不能为空");
         }
+    }
+
+    public HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug,
+                          PromptStyle prompt, ConfirmPrompt confirm, AutoApprove autoApprove) {
+        this(events, retry, loopInput, debug, prompt, confirm, autoApprove, new TurnInterrupt());
     }
 
     public HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug,

@@ -2,6 +2,7 @@ package dev.huagent.prompt;
 
 import dev.huagent.command.CommandResult;
 import dev.huagent.command.SlashCommand;
+import org.jline.terminal.Attributes;
 import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
@@ -20,7 +21,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -33,16 +36,21 @@ class LineEditorTest {
     private static final String TRACK_MOUSE = "\u001b[?1000h";
     private static final String UNTRACK_MOUSE = "\u001b[?1000l";
 
+    private static final String ESC = "\u001b";
+
     private PipedOutputStream keyboard;
     private ByteArrayOutputStream screen;
+    private Terminal terminal;
     private LineEditor editor;
+    /** 连按判断用的时钟，由测试推进。 */
+    private final AtomicLong clock = new AtomicLong();
 
     @BeforeEach
     void open() throws IOException {
         keyboard = new PipedOutputStream();
         PipedInputStream in = new PipedInputStream(keyboard, 4096);
         screen = new ByteArrayOutputStream();
-        Terminal terminal = TerminalBuilder.builder().system(false).streams(in, screen).type("xterm")
+        terminal = TerminalBuilder.builder().system(false).streams(in, screen).type("xterm")
                 .stdinEncoding(StandardCharsets.UTF_8).stdoutEncoding(StandardCharsets.UTF_8)
                 .size(new Size(80, 24)).build();
         List<SlashCommand> commands = new ArrayList<>();
@@ -50,7 +58,7 @@ class LineEditorTest {
         for (int i = 1; i <= 15; i++) {
             commands.add(SlashCommand.local("cmd%02d".formatted(i), "命令 " + i, (a, c) -> CommandResult.print("")));
         }
-        editor = new LineEditor(terminal, () -> commands);
+        editor = new LineEditor(terminal, () -> commands, clock::get);
     }
 
     @AfterEach
@@ -138,14 +146,115 @@ class LineEditorTest {
     }
 
     @Test
-    void ctrlCClearsTypedTextAndEndsInputOnAnEmptyLine() throws Exception {
+    void ctrlCClearsTheLineAndASecondPressEndsInput() throws Exception {
         CompletableFuture<String> line = read("A> ");
-        type("丢掉这行\u0003保留\r");
+        type("丢掉这行\u0003");
+        awaitScreen(LineEditor.EXIT_HINT);
+        type("保留\r");
         assertEquals("保留", line.get(5, TimeUnit.SECONDS));
 
+        // 隔得太久不算连按：只清空并再次提示，800 ms 内再按才结束输入。
+        advance(DoublePress.WINDOW_MILLIS + 1);
         CompletableFuture<String> ended = read("B> ");
+        int from = screen().length();
+        type("\u0003");
+        awaitScreen(LineEditor.EXIT_HINT, from);
+        assertFalse(ended.isDone());
         type("\u0003");
         assertNull(ended.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void escapeTwiceClearsTheLineAndKeepsItInHistory() throws Exception {
+        CompletableFuture<String> line = read("A> ");
+        type("草稿");
+        type(ESC);
+        awaitScreen(LineEditor.CLEAR_HINT);
+        assertFalse(line.isDone());
+        type(ESC);
+        // 单独的 Esc 要等 JLine 的歧义超时才生效。
+        Thread.sleep(300);
+        type("新\r");
+        assertEquals("新", line.get(5, TimeUnit.SECONDS));
+
+        CompletableFuture<String> again = read("B> ");
+        type(UP + UP + "\r");
+        assertEquals("草稿", again.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void escapeOnAnEmptyLineDoesNothingAndAPauseStartsOver() throws Exception {
+        CompletableFuture<String> line = read("A> ");
+        type(ESC);
+        Thread.sleep(300);
+        assertFalse(screen().contains(LineEditor.CLEAR_HINT));
+        type("保留" + ESC);
+        awaitScreen(LineEditor.CLEAR_HINT);
+        advance(DoublePress.WINDOW_MILLIS + 1);
+        type(ESC);
+        Thread.sleep(300);
+        type("\r");
+        assertEquals("保留", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void escapeAndCtrlCDuringATaskInterruptItInRawMode() throws Exception {
+        CountDownLatch interrupts = new CountDownLatch(2);
+        editor.onInterrupt(interrupts::countDown);
+        editor.taskRunning(true);
+        assertFalse(terminal.getAttributes().getLocalFlag(Attributes.LocalFlag.ECHO), "任务期间不回显");
+        type(ESC);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (interrupts.getCount() > 1 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        // 紧跟在 Esc 后的字符会和它组成 Alt 组合键，等 Esc 处理完再按 Ctrl+C。
+        type("\u0003");
+        assertTrue(interrupts.await(5, TimeUnit.SECONDS));
+        editor.taskRunning(false);
+        assertTrue(terminal.getAttributes().getLocalFlag(Attributes.LocalFlag.ECHO), "任务结束后恢复终端模式");
+    }
+
+    @Test
+    void textTypedDuringATaskIsFilledIntoTheNextPrompt() throws Exception {
+        CountDownLatch interrupts = new CountDownLatch(1);
+        editor.onInterrupt(interrupts::countDown);
+        editor.taskRunning(true);
+        // 方向键等按键序列整个丢弃，不算 Esc；退格删掉一个字，回车不提交。
+        type("abc" + UP + "\u007f吧\r");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!editor.typedAhead().equals("ab吧") && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        editor.taskRunning(false);
+        CompletableFuture<String> line = read("B> ");
+        awaitScreen("ab吧");
+        type("!\r");
+        assertEquals("ab吧!", line.get(5, TimeUnit.SECONDS));
+        assertEquals(1, interrupts.getCount());
+    }
+
+    @Test
+    void escapeInAConfirmationDuringATaskDeclinesAndInterrupts() throws Exception {
+        CountDownLatch interrupts = new CountDownLatch(1);
+        editor.onInterrupt(interrupts::countDown);
+        editor.taskRunning(true);
+        CompletableFuture<String> answer = read("[y/N] ");
+        type("y" + ESC);
+        assertEquals("", answer.get(5, TimeUnit.SECONDS));
+        assertTrue(interrupts.await(5, TimeUnit.SECONDS));
+        editor.taskRunning(false);
+    }
+
+    @Test
+    void ctrlCTwiceDuringATaskEndsInputAtTheNextPrompt() throws Exception {
+        CountDownLatch interrupts = new CountDownLatch(2);
+        editor.onInterrupt(interrupts::countDown);
+        editor.taskRunning(true);
+        type("\u0003\u0003");
+        assertTrue(interrupts.await(5, TimeUnit.SECONDS));
+        editor.taskRunning(false);
+        assertNull(read("").get(5, TimeUnit.SECONDS));
     }
 
     @Test
@@ -242,6 +351,10 @@ class LineEditorTest {
             awaitScreen(prompt);
         }
         return line;
+    }
+
+    private void advance(long millis) {
+        clock.addAndGet(TimeUnit.MILLISECONDS.toNanos(millis));
     }
 
     private void type(String keys) throws IOException {

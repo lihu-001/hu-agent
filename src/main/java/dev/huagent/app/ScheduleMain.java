@@ -284,7 +284,7 @@ public final class ScheduleMain {
                 : new ChatLoop(client, registry, config.maxModelCalls(),
                         systemPrompt(catalog, entries, true) + mcp.promptSuffix() + workflowSuffix + goalSuffix,
                         hooks, new TodoReminder(todos), compactor, background, options.events(), options.retry(),
-                        goal, slash, options.debug(), options.prompt());
+                        goal, slash, options.debug(), options.prompt(), options.interrupt());
         if (startScheduler) {
             scheduleManager.start(debug);
         }

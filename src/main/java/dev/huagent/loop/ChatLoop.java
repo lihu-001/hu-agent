@@ -12,6 +12,7 @@ import dev.huagent.harness.EventHub;
 import dev.huagent.harness.ModelRetryPolicy;
 import dev.huagent.harness.ToolTrace;
 import dev.huagent.harness.TurnEvents;
+import dev.huagent.harness.TurnInterrupt;
 import dev.huagent.hook.AgentHooks;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.model.ContextTooLargeException;
@@ -35,13 +36,19 @@ import java.net.http.HttpTimeoutException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Supplier;
 
 public final class ChatLoop {
     private static final String DEFAULT_SYSTEM_PROMPT = "你是一个编程助手，请用中文回答。需要操作或查看环境时使用 shell 工具，"
             + "根据真实工具结果回答。工具错误可修正后再次调用，不要把失败描述为成功。";
+    /** 用户中断后记进历史的标记，让模型知道上一轮没做完是用户中断的（Claude Code 为 [Request interrupted by user]）。 */
+    static final String INTERRUPTED_MARKER = "[用户中断了本轮请求]";
+    static final String TOOL_INTERRUPTED = "工具已中断：用户中断了本轮请求，操作可能已部分完成。";
+    static final String TOOL_SKIPPED = "工具未执行：用户中断了本轮请求。";
     private final ModelClient client;
     private final ToolRegistry registry;
     private final int maxModelCalls;
@@ -61,6 +68,8 @@ public final class ChatLoop {
     private final boolean debug;
     /** 等待输入时的提示符样式；hu 用 FramedPrompt，其余构造器为 "你> "。 */
     private final PromptStyle prompt;
+    /** 用户中断（Esc / Ctrl+C）；为 null 时没有中断，与之前行为一致。 */
+    private final TurnInterrupt interrupt;
     /** 最近一次主对话请求之后的上下文 token 数，-1 表示未知；只用于提示符显示。 */
     private int contextTokens = -1;
 
@@ -151,6 +160,20 @@ public final class ChatLoop {
                     AgentHooks hooks, TodoReminder reminder, ContextCompactor compactor,
                     BackgroundManager background, EventHub events, ModelRetryPolicy retryPolicy,
                     GoalController goal, CommandRegistry commands, boolean debug, PromptStyle prompt) {
+        this(client, registry, maxModelCalls, systemPrompt, hooks, reminder, compactor, background, events,
+                retryPolicy, goal, commands, debug, prompt, null);
+    }
+
+    /**
+     * interrupt 非 null 时一轮（含斜杠命令）可被用户中断（hu 里任务运行中按 Esc 或 Ctrl+C，见 TurnInterrupt）：
+     * 保留本轮已有的消息，没有结果的工具调用补上中断说明，再记一条中断标记，然后回到提示符；不触发 Stop。
+     * 为 null 时与之前完全相同。
+     */
+    public ChatLoop(ModelClient client, ToolRegistry registry, int maxModelCalls, String systemPrompt,
+                    AgentHooks hooks, TodoReminder reminder, ContextCompactor compactor,
+                    BackgroundManager background, EventHub events, ModelRetryPolicy retryPolicy,
+                    GoalController goal, CommandRegistry commands, boolean debug, PromptStyle prompt,
+                    TurnInterrupt interrupt) {
         if (maxModelCalls <= 0) {
             throw new IllegalArgumentException("每轮模型调用上限必须为正数");
         }
@@ -168,12 +191,16 @@ public final class ChatLoop {
         this.commands = commands;
         this.debug = debug;
         this.prompt = Objects.requireNonNull(prompt);
+        this.interrupt = interrupt;
     }
 
     public void run(BufferedReader input, PrintWriter output) throws IOException {
         try {
             converse(input, output);
         } finally {
+            if (interrupt != null) {
+                interrupt.end();
+            }
             // S11：退出、EOF、中断或异常结束会话时都取消仍在运行的后台命令。
             if (background != null) {
                 int cancelled = background.shutdown();
@@ -198,6 +225,10 @@ public final class ChatLoop {
             }
         }
         while (true) {
+            // 上一行的处理到此结束：不再响应中断按键，没处理完的中断请求作废。
+            if (interrupt != null) {
+                interrupt.end();
+            }
             if (client instanceof ModelSelection selection) {
                 prompt.model(selection.model());
             }
@@ -217,6 +248,10 @@ public final class ChatLoop {
             if (StrUtil.isBlank(line)) {
                 continue;
             }
+            // 从这里到下一次提示符都是任务（含斜杠命令），用户可以中断。
+            if (interrupt != null) {
+                interrupt.begin();
+            }
             // 命令提交的本轮输入在 UserPromptSubmit 放行后才生效（如设置目标），被拒绝时在提示后追加说明。
             Supplier<String> onAccepted = null;
             String rejectedNote = "";
@@ -231,6 +266,10 @@ public final class ChatLoop {
                     result = CommandResult.print("命令> 执行失败（" + e.getClass().getSimpleName()
                             + (e.getMessage() == null ? "" : "：" + e.getMessage()) + "）");
                 } catch (InterruptedException e) {
+                    if (userInterrupted()) {
+                        print(output, "命令> 已中断。");
+                        continue;
+                    }
                     Thread.currentThread().interrupt();
                     output.println("请求已中断，对话结束。");
                     output.flush();
@@ -284,6 +323,8 @@ public final class ChatLoop {
             List<ChatMessage> request = new ArrayList<>(history);
             int turnStart = request.size();
             boolean toolsRecorded = false;
+            // 正在执行的工具调用：本轮被中断时它的结果记为已中断，之后的记为未执行。
+            ToolCall running = null;
             // S11：本轮未保存前交付的通知；首次请求失败、本轮被丢弃时放回队列。
             List<String> unsavedScheduled = new ArrayList<>();
             List<String> unsavedBackground = new ArrayList<>();
@@ -316,6 +357,7 @@ public final class ChatLoop {
                 }
                 try {
                     for (int step = 1; step <= maxModelCalls; step++) {
+                        checkInterrupt();
                         // S15：定时事件与后台完成通知合并附加到最后一条 user/tool 消息末尾，不新增消息角色。
                         List<String> scheduled = events == null ? List.of() : events.drain();
                         List<String> notices = background == null ? List.of() : background.takeNotifications();
@@ -396,9 +438,12 @@ public final class ChatLoop {
                         }
                         boolean limitReached = step == maxModelCalls;
                         for (ToolCall call : answer.toolCalls()) {
+                            checkInterrupt();
                             detail(output, ToolTrace.request(call));
+                            running = call;
                             String result = limitReached ? "工具未执行：已达到本轮模型调用上限。"
                                     : registry.execute(call);
+                            running = null;
                             request.add(ChatMessage.tool(call.id(), result));
                             detail(output, ToolTrace.result(call, result));
                         }
@@ -433,13 +478,67 @@ public final class ChatLoop {
                 requeue(toolsRecorded, unsavedScheduled, unsavedBackground);
                 output.println("请求失败：" + e.getMessage() + "；" + failureHint(toolsRecorded));
             } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                output.println("请求已中断，对话结束。");
-                output.flush();
-                return;
+                if (!userInterrupted()) {
+                    Thread.currentThread().interrupt();
+                    output.println("请求已中断，对话结束。");
+                    output.flush();
+                    return;
+                }
+                // 与 Claude Code 相同，中断的一轮留在历史里（已送达的通知随之保存）；提示词还没记录时没有可保留的。
+                if (request.size() > turnStart) {
+                    closeInterrupted(request, running);
+                    history = request;
+                    output.println("已中断 · 接下来要做什么？");
+                    if (goal != null && goal.active()) {
+                        output.println("目标> 目标保持活跃；输入任意内容继续推进。");
+                    }
+                } else {
+                    output.println("已中断 · 提示词未提交。");
+                }
             }
             output.flush();
         }
+    }
+
+    /** 检查点：按键时任务可能不在可中断的阻塞调用里，或者工具没有把中断传出来，在这里结束本轮。 */
+    private void checkInterrupt() throws InterruptedException {
+        if (interrupt != null && interrupt.requested()) {
+            throw new InterruptedException("用户中断了本轮请求");
+        }
+    }
+
+    /** 是不是用户中断（而不是会话结束）；是的话清除中断请求留下的线程中断状态，之后的输出与保存照常进行。 */
+    private boolean userInterrupted() {
+        if (interrupt == null || !interrupt.requested()) {
+            return false;
+        }
+        Thread.interrupted();
+        return true;
+    }
+
+    /**
+     * 中断后补全本轮：协议要求每个工具调用都有结果，最后一条回复里还没有结果的调用补上说明
+     * （正在执行的为已中断，其余为未执行）；最后记一条中断标记。
+     */
+    private static void closeInterrupted(List<ChatMessage> request, ToolCall running) {
+        int last = request.size() - 1;
+        while (last >= 0 && !"assistant".equals(request.get(last).role())) {
+            last--;
+        }
+        if (last >= 0) {
+            Set<String> answered = new HashSet<>();
+            for (ChatMessage message : request.subList(last + 1, request.size())) {
+                if ("tool".equals(message.role())) {
+                    answered.add(message.toolCallId());
+                }
+            }
+            for (ToolCall call : request.get(last).toolCalls()) {
+                if (!answered.contains(call.id())) {
+                    request.add(ChatMessage.tool(call.id(), call.equals(running) ? TOOL_INTERRUPTED : TOOL_SKIPPED));
+                }
+            }
+        }
+        request.add(new ChatMessage("user", INTERRUPTED_MARKER));
     }
 
     /**

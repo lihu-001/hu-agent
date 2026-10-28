@@ -282,7 +282,8 @@ public final class TeamMain {
         // 唯一读终端的地方：此后所有确认和 Lead 的输入都从控制台的事件队列取。
         TeamConsole console = options == null ? new TeamConsole(terminal, output)
                 : new TeamConsole(terminal, output, options.prompt(), options.confirm());
-        BufferedReader answers = console.answers();
+        // Lead 在主线程上读确认回答；中断请求等回答读完再中断主线程（见 TurnInterrupt.answers）。
+        BufferedReader answers = options == null ? console.answers() : options.interrupt().answers(console.answers());
         List<AgentHook> userHooks = HookTrust.load(projectDirectory, answers, output, trustStore);
         McpManager mcp = mcpStarter.start(answers, output);
         try {
@@ -437,7 +438,7 @@ public final class TeamMain {
                 : new ChatLoop(client, registry, config.maxModelCalls(),
                         systemPrompt(catalog, entries, true) + mcp.promptSuffix() + workflowSuffix + goalSuffix,
                         hooks, new TodoReminder(todos), compactor, background, options.events(), options.retry(),
-                        goal, slash, options.debug(), options.prompt());
+                        goal, slash, options.debug(), options.prompt(), options.interrupt());
         if (startScheduler) {
             scheduleManager.start(debug);
         }
