@@ -69,7 +69,7 @@ final class ViewCommands {
                     .append("；MCP server ").append(sources.mcp().servers().size()).append(" 个；工作流")
                     .append(sources.workflows() == null ? "未启用" : "已启用")
                     .append("\n状态> 配置来自 ").append(HuHome.modelFile()).append("、").append(HuHome.configFile())
-                    .append(" 与 HU_* 环境变量，文件修改后需重启；/model 可仅在本次会话切换模型。");
+                    .append(" 与 HU_* 环境变量，文件修改后需重启；/model 可列出与切换模型。");
             return CommandResult.print(text.toString());
         });
     }

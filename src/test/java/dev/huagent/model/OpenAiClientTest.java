@@ -269,6 +269,47 @@ class OpenAiClientTest {
                 () -> client(baseUrl, Duration.ofMillis(100)).complete(List.of(), List.of()));
     }
 
+    @Test
+    void listModelsReadsIdsFromModelsEndpointAndSkipsUnselectableNames() throws Exception {
+        AtomicReference<String> listMethod = new AtomicReference<>();
+        AtomicReference<String> listAuthorization = new AtomicReference<>();
+        server.createContext("/v1/models", exchange -> {
+            try (exchange) {
+                listMethod.set(exchange.getRequestMethod());
+                listAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+                byte[] body = JSON.toJSONBytes(JSONObject.of("object", "list", "data", List.of(
+                        JSONObject.of("id", "gpt-6-astra", "object", "model"), JSONObject.of("id", "glm-5.3-flash"),
+                        JSONObject.of("id", "two names"), JSONObject.of("id", "a" + (char) 0x200B + "b"),
+                        JSONObject.of("id", 42), JSONObject.of("object", "model"), "not-an-object",
+                        JSONObject.of("id", "cc/glm-5.3"))));
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            }
+        });
+
+        assertEquals(List.of("gpt-6-astra", "glm-5.3-flash", "cc/glm-5.3"),
+                client(baseUrl, Duration.ofSeconds(5)).listModels());
+        assertEquals("GET", listMethod.get());
+        assertEquals("Bearer test-key", listAuthorization.get());
+        assertNull(request.get(), "列出模型不发对话请求");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"404", "200:not json", "200:{\"object\":\"list\"}"})
+    void listModelsFailsWithoutLeakingBody(String reply) {
+        String[] parts = reply.split(":", 2);
+        server.createContext("/v1/models", exchange -> {
+            try (exchange) {
+                byte[] body = (parts.length > 1 ? parts[1] : "secret-detail").getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(Integer.parseInt(parts[0]), body.length);
+                exchange.getResponseBody().write(body);
+            }
+        });
+
+        IOException error = assertThrows(IOException.class, () -> client(baseUrl, Duration.ofSeconds(5)).listModels());
+        assertFalse(error.getMessage().contains("secret-detail"), error.getMessage());
+    }
+
     private OpenAiClient client(String url, Duration timeout) {
         return new OpenAiClient(url, "test-key", "test-model", timeout);
     }

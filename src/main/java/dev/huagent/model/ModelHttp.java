@@ -1,15 +1,53 @@
 package dev.huagent.model;
 
+import dev.huagent.config.ModelConfig;
+
 import cn.hutool.core.util.StrUtil;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
-/** OpenAI 与 Anthropic 两种协议的客户端共用：基础地址与 api-key 校验、HTTP 失败分类。 */
+/** OpenAI 与 Anthropic 两种协议的客户端共用：基础地址与 api-key 校验、HTTP 失败分类、模型列表解析。 */
 final class ModelHttp {
     private ModelHttp() {
+    }
+
+    /** 模型列表响应：两种协议都是 {"data": [{"id": …}, …]}，Anthropic 另有分页字段。 */
+    static JSONObject modelList(HttpResponse<String> response) throws IOException {
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw failure(response);
+        }
+        try {
+            JSONObject json = JSON.parseObject(response.body());
+            if (json == null || !(json.get("data") instanceof JSONArray)) {
+                throw new IOException("模型列表响应缺少 data");
+            }
+            return json;
+        } catch (RuntimeException e) {
+            throw new IOException("模型列表响应不是有效的 JSON");
+        }
+    }
+
+    /** data 中的模型名称；名称不合法或不是文本的条目跳过。 */
+    static List<String> modelIds(JSONObject list) {
+        List<String> ids = new ArrayList<>();
+        for (Object item : list.getJSONArray("data")) {
+            if (item instanceof JSONObject model && model.get("id") instanceof String id) {
+                try {
+                    ids.add(ModelConfig.checkedModel(id));
+                } catch (IllegalArgumentException e) {
+                    // 无法通过 /model 选中的名称不列出。
+                }
+            }
+        }
+        return ids;
     }
 
     /** 返回去掉末尾斜杠的基础地址，客户端在后面拼接各自的接口路径。 */

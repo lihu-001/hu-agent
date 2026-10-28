@@ -324,6 +324,57 @@ class AnthropicClientTest {
         assertEquals(8192, request.get().getIntValue("max_tokens"));
     }
 
+    @Test
+    void listModelsFollowsPagesWithSameHeaders() throws Exception {
+        List<String> queries = new java.util.concurrent.CopyOnWriteArrayList<>();
+        AtomicReference<String> listKey = new AtomicReference<>();
+        AtomicReference<String> listVersion = new AtomicReference<>();
+        AtomicReference<String> listAuthorization = new AtomicReference<>();
+        server.createContext("/v1/models", exchange -> {
+            try (exchange) {
+                String query = exchange.getRequestURI().getRawQuery();
+                queries.add(query);
+                listKey.set(exchange.getRequestHeaders().getFirst("x-api-key"));
+                listVersion.set(exchange.getRequestHeaders().getFirst("anthropic-version"));
+                listAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+                JSONObject page = query.contains("after_id")
+                        ? JSONObject.of("data", List.of(JSONObject.of("id", "claude-haiku-5-5")), "has_more", false,
+                        "last_id", "claude-haiku-5-5")
+                        : JSONObject.of("data", List.of(JSONObject.of("id", "claude-opus-5-5", "type", "model"),
+                        JSONObject.of("id", "claude-sonnet-5-5")), "has_more", true, "last_id", "claude-sonnet-5-5");
+                byte[] body = JSON.toJSONBytes(page);
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            }
+        });
+
+        assertEquals(List.of("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"),
+                client(root + "/v1", true).listModels());
+        assertEquals(List.of("limit=" + AnthropicClient.MODELS_PAGE_SIZE,
+                "limit=" + AnthropicClient.MODELS_PAGE_SIZE + "&after_id=claude-sonnet-5-5"), queries);
+        assertEquals("test-key", listKey.get());
+        assertEquals(AnthropicClient.API_VERSION, listVersion.get());
+        assertEquals("Bearer test-key", listAuthorization.get());
+        assertNull(request.get(), "列出模型不发对话请求");
+    }
+
+    @Test
+    void listModelsStopsAfterMaxPages() throws Exception {
+        List<String> queries = new java.util.concurrent.CopyOnWriteArrayList<>();
+        server.createContext("/v1/models", exchange -> {
+            try (exchange) {
+                queries.add(exchange.getRequestURI().getRawQuery());
+                byte[] body = JSON.toJSONBytes(JSONObject.of("data", List.of(JSONObject.of("id", "m")),
+                        "has_more", true, "last_id", "m"));
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            }
+        });
+
+        assertEquals(AnthropicClient.MODELS_MAX_PAGES, client(root, false).listModels().size());
+        assertEquals(AnthropicClient.MODELS_MAX_PAGES, queries.size());
+    }
+
     private AnthropicClient client(String url, boolean bearer) {
         return new AnthropicClient(url, "test-key", "test-model", 1024, bearer, Duration.ofSeconds(5));
     }

@@ -1,5 +1,6 @@
 package dev.huagent.model;
 
+import dev.huagent.config.ModelConfig;
 import dev.huagent.tool.ToolCall;
 import dev.huagent.tool.ToolDefinition;
 
@@ -24,12 +25,15 @@ import java.util.function.IntConsumer;
 public final class OpenAiClient implements ModelClient, ModelSelection {
     private final HttpClient httpClient;
     private final URI endpoint;
+    private final URI modelsEndpoint;
     private final String apiKey;
     private volatile String model;
     private final Duration timeout;
 
     public OpenAiClient(String baseUrl, String apiKey, String model, Duration timeout) {
-        this.endpoint = URI.create(ModelHttp.baseUrl(baseUrl, apiKey, model) + "/chat/completions");
+        String base = ModelHttp.baseUrl(baseUrl, apiKey, model);
+        this.endpoint = URI.create(base + "/chat/completions");
+        this.modelsEndpoint = URI.create(base + "/models");
         this.apiKey = ModelHttp.apiKey(apiKey);
         this.model = model.strip();
         this.timeout = timeout;
@@ -43,7 +47,18 @@ public final class OpenAiClient implements ModelClient, ModelSelection {
 
     @Override
     public void selectModel(String name) {
-        model = ModelSelection.checkedModel(name);
+        model = ModelConfig.checkedModel(name);
+    }
+
+    @Override
+    public List<String> listModels() throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(modelsEndpoint)
+                .timeout(timeout)
+                .header("Authorization", "Bearer " + apiKey)
+                .GET()
+                .build();
+        return ModelHttp.modelIds(ModelHttp.modelList(httpClient.send(request,
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))));
     }
 
     @Override

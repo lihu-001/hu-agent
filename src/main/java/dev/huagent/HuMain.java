@@ -7,6 +7,7 @@ import dev.huagent.config.AgentConfig;
 import dev.huagent.config.ConfigSetup;
 import dev.huagent.config.HuHome;
 import dev.huagent.config.HuVersion;
+import dev.huagent.config.ModelDefaults;
 import dev.huagent.config.ProjectDirectory;
 import dev.huagent.goal.GoalStarter;
 import dev.huagent.harness.AgentConsole;
@@ -82,6 +83,8 @@ public final class HuMain {
                 return;
             }
             AgentConfig config = AgentConfig.load(configFile, modelFile, environment);
+            // /model 把选择写回读取模型的那个文件（与 load 的选择相同）。
+            ModelDefaults defaults = ModelDefaults.locate(configFile, modelFile, environment);
             // 首次配置引导用 Console 读取（API Key 不回显）；之后由行编辑器接管终端，Console 不再读写。
             AtomicReference<CommandRegistry> registry = new AtomicReference<>();
             editor = console == null ? null : LineEditor.open(() -> {
@@ -99,7 +102,7 @@ public final class HuMain {
             PromptStyle prompt = promptStyle(console, config, columns);
             // 补全要用会话装配出的注册表（含技能命令）。
             CommandStarter commands = (sources, warnings) -> {
-                CommandRegistry bound = CommandStarter.builtin().bind(sources, warnings);
+                CommandRegistry bound = CommandStarter.builtin(defaults).bind(sources, warnings);
                 registry.set(bound);
                 return bound;
             };

@@ -20,6 +20,29 @@ class SlashCompleterTest {
     private final SlashCompleter completer = new SlashCompleter(() -> COMMANDS);
 
     @Test
+    void commandChoicesAreListedAfterSpaceAndFilteredBySubstring() {
+        SlashCommand model = SlashCommand.localWithArgument("model", "/model [模型名称]", "切换模型",
+                (a, c) -> CommandResult.print("")).withChoices(() -> List.of(
+                new SlashCommand.Choice("gpt-6-astra", "当前"), new SlashCommand.Choice("glm-5.3-flash", "常用"),
+                new SlashCommand.Choice("cc/GLM-5.3", "")));
+        SlashCompleter models = new SlashCompleter(() -> List.of(model));
+
+        assertEquals(List.of("/model gpt-6-astra", "/model glm-5.3-flash", "/model cc/GLM-5.3"),
+                values(models.candidates("/model ", 0)));
+        assertEquals(List.of("/model glm-5.3-flash", "/model cc/GLM-5.3"), values(models.candidates("/model  glm", 0)));
+        assertEquals(List.of(), models.candidates("/model zzz", 0));
+        assertEquals(List.of(), models.candidates("/model glm extra", 0));
+        assertEquals(List.of("/model"), values(models.candidates("/mo", 0)), "命令名阶段照常补全命令");
+
+        List<Candidate> found = models.candidates("/model ", 0);
+        assertEquals("gpt-6-astra    当前", found.get(0).displ());
+        assertEquals("cc/GLM-5.3", found.get(2).displ());
+        assertFalse(found.get(0).complete(), "选中后不补空格，再回车执行");
+        // 列数 20：缩进余量 4，只剩 16 列，说明被截断。
+        assertEquals("glm-5.3-flash  …", models.candidates("/model glm-5", 20).get(0).displ());
+    }
+
+    @Test
     void slashAloneListsEveryNameAndAlias() {
         assertEquals(List.of("/help", "/compact", "/context", "/exit", "/quit", "/review"),
                 values(completer.candidates("/", 0)));

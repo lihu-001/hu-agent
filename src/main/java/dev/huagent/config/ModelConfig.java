@@ -3,9 +3,12 @@ package dev.huagent.config;
 import cn.hutool.core.util.StrUtil;
 
 import java.nio.file.Path;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 
 import static dev.huagent.config.PropertiesFile.positiveInt;
 import static dev.huagent.config.PropertiesFile.required;
@@ -13,9 +16,10 @@ import static dev.huagent.config.PropertiesFile.required;
 /**
  * 模型接口配置：接口类型、地址、api-key、模型名称与 token 上限。hu 把它单独保存在 HuHome 下的 model.properties，
  * 首次运行时引导填写；教程各阶段与旧版 hu 仍以 openai.* 写在 config.properties 里（见 legacy）。
+ * models 是同一接口下的常用模型，/model 的选择列表把它们排在最前；接口不提供模型列表时只列这些。
  */
 public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey, String model,
-                          int maxContextTokens, int maxOutputTokens) {
+                          int maxContextTokens, int maxOutputTokens, List<String> models) {
     public static final int DEFAULT_MAX_CONTEXT_TOKENS = 1_000_000;
     public static final String TEMPLATE = "/hu-agent/model.example.properties";
     /** 环境变量 → 配置项（不含前缀），非空时优先于文件。 */
@@ -33,6 +37,13 @@ public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey,
         if (provider.protocol() == ModelProvider.Protocol.ANTHROPIC && maxOutputTokens <= 0) {
             throw new IllegalArgumentException("max-output-tokens 必须为正整数");
         }
+        models = models == null ? List.of() : List.copyOf(models);
+    }
+
+    /** 不配置常用模型。 */
+    public ModelConfig(ModelProvider provider, String baseUrl, String apiKey, String model,
+                       int maxContextTokens, int maxOutputTokens) {
+        this(provider, baseUrl, apiKey, model, maxContextTokens, maxOutputTokens, List.of());
     }
 
     /** hu 的 model.properties，配置项不带前缀；文件不存在时，只要环境变量提供了模型与 api-key 也可以启动。 */
@@ -58,9 +69,31 @@ public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey,
         return StrUtil.isNotBlank(environment.get("HU_MODEL")) && StrUtil.isNotBlank(environment.get("HU_API_KEY"));
     }
 
+    /**
+     * 模型名称的规则，/model 切换与 models 配置共用：可包含 provider/model 形式的路径，不得为空或包含空白、
+     * 控制字符与零宽空格等不可见的格式字符（从网页复制时常混入，终端里看不出来）。校验后原样返回，不修剪名称，
+     * 以免静默接受非法输入。
+     *
+     * @throws IllegalArgumentException 名称为 null、空字符串或包含空白、控制或格式字符
+     */
+    public static String checkedModel(String name) {
+        if (name == null || name.isEmpty()) {
+            throw new IllegalArgumentException("模型名称不能为空");
+        }
+        for (int offset = 0; offset < name.length();) {
+            int codePoint = name.codePointAt(offset);
+            if (Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint)
+                    || Character.isISOControl(codePoint) || Character.getType(codePoint) == Character.FORMAT) {
+                throw new IllegalArgumentException("模型名称不能包含空白、控制字符或不可见字符");
+            }
+            offset += Character.charCount(codePoint);
+        }
+        return name;
+    }
+
     /** 同一接口换一个模型（目标判断器单独配置模型时使用）。 */
     public ModelConfig withModel(String name) {
-        return new ModelConfig(provider, baseUrl, apiKey, name, maxContextTokens, maxOutputTokens);
+        return new ModelConfig(provider, baseUrl, apiKey, name, maxContextTokens, maxOutputTokens, models);
     }
 
     /**
@@ -90,11 +123,33 @@ public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey,
                 required(properties, prefix + "model", null, source),
                 positiveInt(properties, prefix + "max-context-tokens", DEFAULT_MAX_CONTEXT_TOKENS),
                 StrUtil.isBlank(properties.getProperty(outputKey)) ? provider.defaultMaxOutputTokens()
-                        : positiveInt(properties, outputKey, provider.defaultMaxOutputTokens()));
+                        : positiveInt(properties, outputKey, provider.defaultMaxOutputTokens()),
+                models(properties, prefix + "models"));
+    }
+
+    /** 逗号（含中文逗号、顿号）或空白分隔，重复的只保留第一个；名称不合法时报错，不回显配置内容。 */
+    private static List<String> models(Properties properties, String key) {
+        String value = properties.getProperty(key);
+        if (StrUtil.isBlank(value)) {
+            return List.of();
+        }
+        Set<String> names = new LinkedHashSet<>();
+        for (String name : value.strip().split("[,，、\\s]+")) {
+            if (name.isEmpty()) {
+                continue;
+            }
+            try {
+                names.add(checkedModel(name));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(key + " 中的" + e.getMessage() + "，多个模型用逗号分隔");
+            }
+        }
+        return List.copyOf(names);
     }
 
     @Override
     public String toString() {
-        return "ModelConfig[provider=" + provider.id() + ", baseUrl=" + baseUrl + ", apiKey=***, model=" + model + "]";
+        return "ModelConfig[provider=" + provider.id() + ", baseUrl=" + baseUrl + ", apiKey=***, model=" + model
+                + ", models=" + models + "]";
     }
 }

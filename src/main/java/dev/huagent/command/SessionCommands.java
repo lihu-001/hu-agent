@@ -3,6 +3,7 @@ package dev.huagent.command;
 import dev.huagent.compact.ContextCompactor;
 import dev.huagent.compact.MicroCompact;
 import dev.huagent.compact.TranscriptStore;
+import dev.huagent.config.ModelDefaults;
 import dev.huagent.goal.GoalCommand;
 import dev.huagent.goal.GoalController;
 import dev.huagent.model.ChatMessage;
@@ -22,9 +23,10 @@ final class SessionCommands {
     private SessionCommands() {
     }
 
-    static List<SlashCommand> create(CommandSources sources) {
-        List<SlashCommand> commands = new ArrayList<>(List.of(exit(), model(sources), clear(sources), compact(sources),
-                context(sources), export(sources)));
+    /** defaults 为 null 时 /model 只在本次会话切换，见 model。 */
+    static List<SlashCommand> create(CommandSources sources, ModelDefaults defaults) {
+        List<SlashCommand> commands = new ArrayList<>(List.of(exit(), model(sources, defaults), clear(sources),
+                compact(sources), context(sources), export(sources)));
         if (sources.goal() != null) {
             commands.add(goal(sources.goal()));
         }
@@ -36,32 +38,95 @@ final class SessionCommands {
                 (argument, context) -> CommandResult.exit()).withAliases("quit");
     }
 
-    static SlashCommand model(CommandSources sources) {
+    /**
+     * 不带参数时列出可选模型：当前模型、常用模型（配置的 models）与接口 /models 返回的模型；带名称时切换同一接口的
+     * 模型并保留对话，共用客户端的子代理、队友、压缩与默认目标判断器从下一次请求起跟着换。交互终端里输入
+     * "/model " 后行编辑器列出这些模型（见 ModelCatalog），↑↓ 选择。
+     * defaults 不为 null（hu）时，能确认存在的模型写回启动时读取模型的配置文件，下次启动沿用；
+     * 为 null（教程入口）时只在本次会话生效。
+     */
+    static SlashCommand model(CommandSources sources, ModelDefaults defaults) {
+        String provider = sources.config().modelConfig().provider().label();
+        if (!(sources.client() instanceof ModelSelection selection)) {
+            return SlashCommand.localWithArgument("model", "/model", "查看当前模型", (argument, context) ->
+                    CommandResult.print(argument.isEmpty()
+                            ? "模型> 当前模型 " + sources.currentModel() + "（" + provider + "）"
+                            : "模型> 当前客户端不支持会话内切换模型，未切换。"));
+        }
+        ModelCatalog catalog = new ModelCatalog(selection, sources.config().modelConfig().models());
+        catalog.prefetch();
         return SlashCommand.localWithArgument("model", "/model [模型名称]",
-                "查看当前模型，或切换同一接口的模型（仅本次会话）", (argument, context) -> {
-            if (argument.isEmpty()) {
-                return CommandResult.print("模型> 当前模型 " + sources.currentModel() + "（"
-                        + sources.config().modelConfig().provider().label() + "）"
-                        + "\n模型> 用法：/model <模型名称>，仅本次会话生效，接口、密钥与 token 上限不变。");
-            }
-            if (!(sources.client() instanceof ModelSelection selection)) {
-                return CommandResult.print("模型> 当前客户端不支持会话内切换模型，未切换。");
-            }
-            String previous = selection.model();
+                "列出可选模型，或切换同一接口的模型" + (defaults == null ? "（仅本次会话）" : "并设为默认"),
+                (argument, context) -> CommandResult.print(argument.isEmpty() ? listing(catalog, provider, defaults)
+                        : select(catalog, defaults, argument)))
+                .withChoices(catalog::choices);
+    }
+
+    private static String listing(ModelCatalog catalog, String provider, ModelDefaults defaults)
+            throws InterruptedException {
+        StringBuilder text = new StringBuilder("模型> 当前模型 ").append(catalog.selection().model())
+                .append("（").append(provider).append("）");
+        if (!catalog.favorites().isEmpty()) {
+            text.append("\n模型> 常用 ").append(String.join("、", catalog.favorites()));
+        }
+        try {
+            List<String> available = catalog.available();
+            text.append("\n模型> 接口提供 ").append(available.size()).append(" 个")
+                    .append(available.isEmpty() ? "" : "：" + String.join("、", available));
+        } catch (IOException e) {
+            text.append("\n模型> 接口没有返回模型列表（").append(reason(e)).append("）")
+                    .append(catalog.favorites().isEmpty() ? "，可在配置文件的 models 中列出常用模型" : "");
+        }
+        return text.append("\n模型> /model <名称> 切换").append(defaults == null ? "（仅本次会话）" : "并设为默认")
+                .append("；交互终端里输入 \"/model \" 后可用 ↑↓ 选择。").toString();
+    }
+
+    private static String select(ModelCatalog catalog, ModelDefaults defaults, String name)
+            throws InterruptedException {
+        ModelSelection selection = catalog.selection();
+        String previous = selection.model();
+        try {
+            selection.selectModel(name);
+        } catch (IllegalArgumentException e) {
+            return "模型> 模型名称必须是一个不含空白、控制字符或不可见字符的名称，未切换。用法：/model <模型名称>";
+        }
+        if (previous.equals(name)) {
+            return "模型> 已在使用 " + previous + "，无需切换。";
+        }
+        return "模型> 已从 " + previous + " 切换到 " + name + "，保留当前对话；子代理、队友、上下文压缩与默认目标判断器"
+                + "也从下一次请求起使用它。\n模型> " + persist(catalog, defaults, name);
+    }
+
+    /** 只把能确认存在的模型（常用模型或接口列表中有）写成默认，拼错的名字不会留到下次启动。 */
+    private static String persist(ModelCatalog catalog, ModelDefaults defaults, String name)
+            throws InterruptedException {
+        if (defaults == null) {
+            return "仅本次会话生效。";
+        }
+        if (defaults.file() == null) {
+            return "环境变量 HU_MODEL 优先于配置文件，仅本次会话生效。";
+        }
+        if (!catalog.favorites().contains(name)) {
             try {
-                selection.selectModel(argument);
-            } catch (IllegalArgumentException e) {
-                return CommandResult.print("模型> 模型名称必须是一个不含空白、控制字符或不可见字符的名称，未切换。"
-                        + "用法：/model <模型名称>");
+                if (!catalog.available().contains(name)) {
+                    return "接口的模型列表里没有 " + name + "，仅本次会话生效，未设为默认；下一次请求会确认它是否可用。";
+                }
+            } catch (IOException e) {
+                return "接口没有返回模型列表（" + reason(e) + "），无法确认 " + name + " 是否存在，仅本次会话生效；"
+                        + "确认可用后可把它写进配置文件的 models 或 model。";
             }
-            if (previous.equals(selection.model())) {
-                return CommandResult.print("模型> 已在使用 " + previous + "，无需切换。");
-            }
-            return CommandResult.print("模型> 已从 " + previous + " 切换到 " + selection.model()
-                    + "，保留当前对话，仅本次会话生效；未请求接口验证模型可用性。"
-                    + "\n模型> 共用客户端的子代理、队友、压缩与默认目标判断器从后续请求起生效；"
-                    + "已发出的请求和单独配置的目标判断器不变。接口、密钥与 token 上限不变。");
-        });
+        }
+        try {
+            defaults.save(name);
+            return "已设为默认，写入 " + defaults.file() + "。";
+        } catch (IOException e) {
+            return "默认模型写入失败（" + e.getClass().getSimpleName() + "），仅本次会话生效。";
+        }
+    }
+
+    /** 失败原因只取异常消息（ModelHttp 的消息不含响应正文），没有消息时用异常类名。 */
+    private static String reason(IOException e) {
+        return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
     }
 
     /**

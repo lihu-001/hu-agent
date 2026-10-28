@@ -7,7 +7,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -110,6 +112,28 @@ class ModelConfigTest {
         assertEquals(config.provider(), judge.provider());
         assertEquals(config.apiKey(), judge.apiKey());
         assertEquals(config.maxOutputTokens(), judge.maxOutputTokens());
+    }
+
+    @Test
+    void favoriteModelsAreSplitDeduplicatedAndKeptByWithModel() throws IOException {
+        assertEquals(List.of(), load("model=m\napi-key=k\n").models());
+        assertEquals(List.of(), load("model=m\napi-key=k\nmodels=  \n").models());
+        ModelConfig config = load("model=m\napi-key=k\nmodels=, gpt-6-astra，glm-5.3-flash、cc/glm-5.3  gpt-6-astra,\n");
+        assertEquals(List.of("gpt-6-astra", "glm-5.3-flash", "cc/glm-5.3"), config.models());
+        assertEquals(config.models(), config.withModel("judge").models());
+
+        Properties legacy = new Properties();
+        legacy.putAll(Map.of("openai.model", "m", "openai.api-key", "k", "openai.models", "a,b"));
+        assertEquals(List.of("a", "b"), ModelConfig.legacy(legacy, Map.of()).models());
+    }
+
+    @Test
+    void favoriteModelsRejectInvisibleCharactersWithoutEchoingThem() {
+        String hidden = "glm" + (char) 0x200B + "-secret";
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> load("model=m\napi-key=k\nmodels=ok," + hidden + "\n"));
+        assertTrue(error.getMessage().contains("models"), error.getMessage());
+        assertFalse(error.getMessage().contains("secret"), error.getMessage());
     }
 
     private ModelConfig load(String contents) throws IOException {

@@ -1,5 +1,6 @@
 package dev.huagent.model;
 
+import dev.huagent.config.ModelConfig;
 import dev.huagent.tool.ToolCall;
 import dev.huagent.tool.ToolDefinition;
 
@@ -10,6 +11,7 @@ import com.alibaba.fastjson2.JSONObject;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -28,9 +30,13 @@ import java.util.function.IntConsumer;
  */
 public final class AnthropicClient implements ModelClient, ModelSelection {
     public static final String API_VERSION = "2023-06-01";
+    /** 模型列表每页的条数（协议上限）与最多读取的页数。 */
+    static final int MODELS_PAGE_SIZE = 1000;
+    static final int MODELS_MAX_PAGES = 10;
 
     private final HttpClient httpClient;
     private final URI endpoint;
+    private final String modelsEndpoint;
     private final String apiKey;
     private volatile String model;
     private final int maxTokens;
@@ -38,7 +44,7 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
     private final Duration timeout;
 
     /**
-     * 请求发往 baseUrl + /v1/messages（baseUrl 已以 /v1 结尾时只补 /messages）。
+     * 请求发往 baseUrl + /v1/messages，模型列表取自 baseUrl + /v1/models（baseUrl 已以 /v1 结尾时不再补 /v1）。
      * bearer 为 true 时除 x-api-key 外再发送 Authorization: Bearer，有的兼容接口只认后者；官方接口只用 x-api-key。
      */
     public AnthropicClient(String baseUrl, String apiKey, String model, int maxTokens, boolean bearer,
@@ -47,7 +53,9 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
         if (maxTokens <= 0) {
             throw new IllegalArgumentException("max-output-tokens 必须为正整数");
         }
-        this.endpoint = URI.create(base + (base.endsWith("/v1") ? "/messages" : "/v1/messages"));
+        String versioned = base.endsWith("/v1") ? base : base + "/v1";
+        this.endpoint = URI.create(versioned + "/messages");
+        this.modelsEndpoint = versioned + "/models";
         this.apiKey = ModelHttp.apiKey(apiKey);
         this.model = model.strip();
         this.maxTokens = maxTokens;
@@ -63,7 +71,26 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
 
     @Override
     public void selectModel(String name) {
-        model = ModelSelection.checkedModel(name);
+        model = ModelConfig.checkedModel(name);
+    }
+
+    /** 按 has_more / last_id 翻页，最多 MODELS_MAX_PAGES 页。 */
+    @Override
+    public List<String> listModels() throws IOException, InterruptedException {
+        List<String> models = new ArrayList<>();
+        String after = null;
+        for (int page = 0; page < MODELS_MAX_PAGES; page++) {
+            URI uri = URI.create(modelsEndpoint + "?limit=" + MODELS_PAGE_SIZE
+                    + (after == null ? "" : "&after_id=" + URLEncoder.encode(after, StandardCharsets.UTF_8)));
+            JSONObject list = ModelHttp.modelList(httpClient.send(request(uri).GET().build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)));
+            models.addAll(ModelHttp.modelIds(list));
+            after = list.getString("last_id");
+            if (!Boolean.TRUE.equals(list.getBoolean("has_more")) || StrUtil.isBlank(after)) {
+                break;
+            }
+        }
+        return models;
     }
 
     @Override
@@ -94,16 +121,9 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
             }).toList());
             body.put("tool_choice", JSONObject.of("type", "auto"));
         }
-        HttpRequest.Builder request = HttpRequest.newBuilder(endpoint)
-                .timeout(timeout)
-                .header("x-api-key", apiKey)
-                .header("anthropic-version", API_VERSION)
-                .header("Content-Type", "application/json");
-        if (bearer) {
-            request.header("Authorization", "Bearer " + apiKey);
-        }
-        HttpResponse<String> response = httpClient.send(
-                request.POST(HttpRequest.BodyPublishers.ofString(JSON.toJSONString(body), StandardCharsets.UTF_8))
+        HttpResponse<String> response = httpClient.send(request(endpoint)
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(JSON.toJSONString(body), StandardCharsets.UTF_8))
                         .build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -115,6 +135,18 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
             contextTokens.accept(tokens);
         }
         return answer;
+    }
+
+    /** 两种请求共用的鉴权与版本头。 */
+    private HttpRequest.Builder request(URI uri) {
+        HttpRequest.Builder request = HttpRequest.newBuilder(uri)
+                .timeout(timeout)
+                .header("x-api-key", apiKey)
+                .header("anthropic-version", API_VERSION);
+        if (bearer) {
+            request.header("Authorization", "Bearer " + apiKey);
+        }
+        return request;
     }
 
     /**
