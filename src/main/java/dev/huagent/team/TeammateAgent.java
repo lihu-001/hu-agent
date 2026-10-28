@@ -55,9 +55,7 @@ final class TeammateAgent {
         }
         try {
             for (int step = 1; step <= setup.maxModelCalls(); step++) {
-                if (setup.debug()) {
-                    say("模型请求> 第 " + step + " 次请求中...");
-                }
+                detail("模型请求> 第 " + step + " 次请求中...");
                 List<ChatMessage> sent = request;
                 ContextCompactor compactor = setup.compactor();
                 if (compactor != null) {
@@ -70,7 +68,7 @@ final class TeammateAgent {
                 }
                 ChatMessage answer = setup.client().complete(List.copyOf(sent), definitions);
                 request.add(answer);
-                if (StrUtil.isNotBlank(answer.content())) {
+                if (StrUtil.isNotBlank(answer.content()) && (setup.debug() || answer.toolCalls().isEmpty())) {
                     say("助手> " + answer.content());
                 }
                 if (answer.toolCalls().isEmpty()) {
@@ -81,10 +79,10 @@ final class TeammateAgent {
                 }
                 boolean limitReached = step == setup.maxModelCalls();
                 for (ToolCall call : answer.toolCalls()) {
-                    say(ToolTrace.request(call, setup.debug()));
+                    detail(ToolTrace.request(call));
                     String result = limitReached ? "工具未执行：已达到本轮模型调用上限。" : setup.tools().execute(call);
                     request.add(ChatMessage.tool(call.id(), result));
-                    say(ToolTrace.result(call, result, setup.debug()));
+                    detail(ToolTrace.result(call, result));
                 }
                 String nudge = reminder == null || limitReached ? null : reminder.afterToolBatch();
                 if (nudge != null) {
@@ -118,5 +116,12 @@ final class TeammateAgent {
     private void say(String line) {
         setup.output().println(line);
         setup.output().flush();
+    }
+
+    /** 只在 debug 模式显示的运行细节。 */
+    private void detail(String line) {
+        if (setup.debug()) {
+            say(line);
+        }
     }
 }

@@ -69,8 +69,11 @@ public final class ScheduleManager {
         background.addShutdownListener(this::close);
     }
 
-    /** 修复上次退出的残留状态、跳过错过时点，然后启动守护调度线程；重复调用无副作用。 */
-    public synchronized void start() throws IOException {
+    /**
+     * 修复上次退出的残留状态、跳过错过时点，然后启动守护调度线程；重复调用无副作用。
+     * debug 为 false 时（hu 默认）不打印加载统计（可用 /schedules 查看），修复与错过时点的说明照常打印。
+     */
+    public synchronized void start(boolean debug) throws IOException {
         if (started) {
             return;
         }
@@ -87,8 +90,10 @@ public final class ScheduleManager {
         scheduler.scheduleWithFixedDelay(this::tickQuietly, millis, millis, TimeUnit.MILLISECONDS);
         executor = scheduler;
         started = true;
-        log.accept("计划> 已加载 " + report.total() + " 个计划，启用 " + report.enabled() + " 个；每 "
-                + pollInterval.toSeconds() + " 秒检查一次，结果写入 " + store.directory());
+        if (debug) {
+            log.accept("计划> 已加载 " + report.total() + " 个计划，启用 " + report.enabled() + " 个；每 "
+                    + pollInterval.toSeconds() + " 秒检查一次，结果写入 " + store.directory());
+        }
     }
 
     /** 启动修复：running 修正为 cancelled；启用且已过期的计划计算下一次并报告错过的时点，不补跑。 */

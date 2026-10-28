@@ -1,13 +1,16 @@
 package dev.huagent.prompt;
 
 import dev.huagent.command.SlashCommand;
+import org.jline.reader.Candidate;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
-import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.UserInterruptException;
 import org.jline.reader.Widget;
+import org.jline.reader.impl.LineReaderImpl;
+import org.jline.terminal.MouseEvent;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.jline.utils.AttributedString;
 
 import java.io.BufferedReader;
 import java.io.IOError;
@@ -16,12 +19,15 @@ import java.io.PrintWriter;
 import java.io.Reader;
 import java.io.Writer;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
- * hu 交互会话的行编辑器（JLine）：方向键编辑与历史，斜杠命令补全。行首输入 / 时在输入行下方列出命令，
- * 继续输入即时过滤；Tab 或 ↑↓ 进入选择，回车把选中的命令填进输入行，再回车执行。
+ * hu 交互会话的行编辑器（JLine）：方向键编辑与历史，斜杠命令补全。行首输入 / 时在输入行下方列出命令（SlashMenu），
+ * 继续输入即时过滤；最多显示 10 个，↑↓ 选择、列表跟着滚动，鼠标滚轮也能滚动列表。
+ * Tab 把选中的命令（未选中时为第一个）填进输入行，回车在选中后填入，再回车执行。
  *
  * <p>输出与读取的配合：ChatLoop 和各种确认先打印提示语（"❯ "、"[y/N] "），再读一行。output 留住还没换行的部分，
  * 读取开始时交给 JLine 当作提示符画出；读取期间其他线程（后台任务、定时计划、队友）的整行输出经 printAbove
@@ -38,28 +44,30 @@ public final class LineEditor implements AutoCloseable {
     private static final String RESTORE_TITLE = "\u001b]0;\u0007\u001b[23;0t";
 
     private final Terminal terminal;
-    private final LineReader reader;
-    private final SlashCompleter completer;
+    private final MenuReader reader;
+    private final SlashMenu menu;
     private final PromptWriter writer = new PromptWriter();
     private final PrintWriter output = new PrintWriter(writer, true);
 
     LineEditor(Terminal terminal, Supplier<? extends Collection<SlashCommand>> commands) {
         this.terminal = Objects.requireNonNull(terminal);
-        this.completer = new SlashCompleter(commands);
-        this.reader = LineReaderBuilder.builder()
-                .terminal(terminal)
-                .completer(completer)
-                // 原样返回输入：不展开 !! 之类的历史引用，也不把反斜杠当转义去掉（Windows 路径）。
-                .option(LineReader.Option.DISABLE_EVENT_EXPANSION, true)
-                // 列表已在输入时显示，Tab 直接进入选择；选择菜单每行一个候选，附带说明。
-                .option(LineReader.Option.MENU_COMPLETE, true)
-                .option(LineReader.Option.AUTO_MENU_LIST, true)
-                .variable(LineReader.BELL_STYLE, "none")
-                .build();
-        reader.setAutosuggestion(LineReader.SuggestionType.COMPLETER);
+        this.menu = new SlashMenu(new SlashCompleter(commands));
+        this.reader = new MenuReader(terminal, menu);
+        // 原样返回输入：不展开 !! 之类的历史引用，也不把反斜杠当转义去掉（Windows 路径）。
+        reader.option(LineReader.Option.DISABLE_EVENT_EXPANSION, true);
+        reader.setVariable(LineReader.BELL_STYLE, "none");
         // 方向键绑定的是 *-line-or-search；Ctrl+N / Ctrl+P 的 *-line-or-history 保持只翻历史。
-        selectOnArrow(LineReader.DOWN_LINE_OR_SEARCH, LineReader.MENU_COMPLETE);
-        selectOnArrow(LineReader.UP_LINE_OR_SEARCH, LineReader.REVERSE_MENU_COMPLETE);
+        onMenu(LineReader.DOWN_LINE_OR_SEARCH, () -> {
+            menu.move(1);
+            return true;
+        });
+        onMenu(LineReader.UP_LINE_OR_SEARCH, () -> {
+            menu.move(-1);
+            return true;
+        });
+        onMenu(LineReader.EXPAND_OR_COMPLETE, () -> fill(menu.choice(true)));
+        onMenu(LineReader.ACCEPT_LINE, () -> fill(menu.choice(false)));
+        reader.getWidgets().put(LineReader.MOUSE, this::mouse);
         reader.getWidgets().put(CONTROL_WIDGET, () -> {
             terminal.writer().write(writer.control);
             terminal.flush();
@@ -96,7 +104,9 @@ public final class LineEditor implements AutoCloseable {
                 try {
                     while (true) {
                         try {
-                            return reader.readLine(prompt);
+                            // JLine 把提示符里的 % 当作格式（%N、%{…%} 等，未知的直接丢掉），
+                            // 确认提示里有模型给出的命令，必须原样显示。
+                            return reader.readLine(prompt.replace("%", "%%"));
                         } catch (UserInterruptException e) {
                             // Ctrl+C：清掉已输入的内容重新读；空行上按下时与 Ctrl+D 一样结束输入。
                             if (e.getPartialLine() == null || e.getPartialLine().isEmpty()) {
@@ -136,25 +146,29 @@ public final class LineEditor implements AutoCloseable {
         closeQuietly(terminal);
     }
 
-    /**
-     * 光标前是命令前缀且有候选时，↑↓ 进入候选选择；否则照常翻历史。
-     * 选择菜单在 callWidget 里运行到用户选定为止；期间关闭自动建议，否则菜单首次重绘时会被候选列表替换
-     * （按 Tab 进入时 JLine 自己会跳过这次替换）。
-     */
-    private void selectOnArrow(String arrow, String select) {
-        Widget history = reader.getWidgets().get(arrow);
-        reader.getWidgets().put(arrow, () -> {
-            if (!completer.matches(reader.getBuffer().upToCursor())) {
-                return history.apply();
-            }
-            reader.setAutosuggestion(LineReader.SuggestionType.NONE);
-            try {
-                reader.callWidget(select);
-            } finally {
-                reader.setAutosuggestion(LineReader.SuggestionType.COMPLETER);
-            }
-            return true;
-        });
+    /** 命令列表显示时按键先交给 action；列表不显示或 action 不处理（返回 false）时照常执行原来的功能。 */
+    private void onMenu(String widget, BooleanSupplier action) {
+        Widget original = reader.getWidgets().get(widget);
+        reader.getWidgets().put(widget, () -> reader.showing() && action.getAsBoolean() || original.apply());
+    }
+
+    /** 用候选替换整行输入，按候选的要求补一个空格；candidate 为 null 时不处理，返回 false。 */
+    private boolean fill(Candidate candidate) {
+        if (candidate == null) {
+            return false;
+        }
+        reader.getBuffer().clear();
+        reader.getBuffer().write(candidate.complete() ? candidate.value() + " " : candidate.value());
+        return true;
+    }
+
+    /** 鼠标跟踪只在列表显示时开启（见 MenuReader）：滚轮滚动列表，其他鼠标事件忽略。 */
+    private boolean mouse() {
+        MouseEvent event = reader.readMouseEvent();
+        if (event.getType() == MouseEvent.Type.Wheel && reader.showing()) {
+            menu.scroll(event.getButton() == MouseEvent.Button.WheelDown ? 1 : -1);
+        }
+        return true;
     }
 
     private static void closeQuietly(Terminal terminal) {
@@ -263,6 +277,62 @@ public final class LineEditor implements AutoCloseable {
                     writeControl(RESTORE_TITLE);
                 }
                 closed = true;
+            }
+        }
+    }
+
+    /**
+     * 每次重画前按输入刷新命令列表：显示时放在输入行下方（post 区域），并开启鼠标跟踪以接收滚轮；
+     * 不显示时关闭跟踪，终端照常选择文字、滚动回看。post 正被 JLine 自己使用（如 Ctrl+R 搜索）时不显示列表。
+     * 列表的状态只在 JLine 的锁下读写：按键、重画和其他线程的 printAbove 都拿着这把锁。
+     */
+    private static final class MenuReader extends LineReaderImpl {
+        private final SlashMenu menu;
+        private final Supplier<AttributedString> view;
+        private boolean tracking;
+        /** 结束读取前的最后一次重画不带列表，留在屏幕上的只有输入行。 */
+        private boolean finishing;
+
+        MenuReader(Terminal terminal, SlashMenu menu) {
+            super(terminal, "hu", new HashMap<>());
+            this.menu = menu;
+            this.view = menu::render;
+        }
+
+        /** 列表正显示在输入行下方。 */
+        boolean showing() {
+            return post == view;
+        }
+
+        @Override
+        protected void redisplay(boolean flush) {
+            lock.lock();
+            try {
+                boolean show = !finishing
+                        && menu.update(buf.toString(), buf.cursor() == buf.length(), size.getColumns(), size.getRows())
+                        && (post == null || post == view);
+                if (show) {
+                    post = view;
+                } else if (post == view) {
+                    post = null;
+                }
+                if (show != tracking) {
+                    tracking = show;
+                    terminal.trackMouse(show ? Terminal.MouseTracking.Normal : Terminal.MouseTracking.Off);
+                }
+                super.redisplay(flush);
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        @Override
+        protected void doCleanup(boolean nl) {
+            finishing = true;
+            try {
+                super.doCleanup(nl);
+            } finally {
+                finishing = false;
             }
         }
     }

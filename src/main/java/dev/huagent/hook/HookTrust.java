@@ -1,5 +1,7 @@
 package dev.huagent.hook;
 
+import dev.huagent.prompt.TerminalText;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -36,11 +38,13 @@ public final class HookTrust {
             say(output, "配置> " + snapshot.project().resolve(HookConfig.DEFAULT_PATH));
             say(output, "命令工作目录> " + snapshot.project());
             for (HookConfig.Definition definition : configuration.definitions()) {
-                say(output, "  " + display(definition.event()) + " [" + display(definition.matcher()) + "] "
-                        + display(definition.command()) + "（超时 " + definition.timeout().toSeconds() + " 秒）");
+                say(output, "  " + TerminalText.visible(definition.event())
+                        + " [" + TerminalText.visible(definition.matcher()) + "] "
+                        + TerminalText.visible(definition.command())
+                        + "（超时 " + definition.timeout().toSeconds() + " 秒）");
             }
             for (Path file : snapshot.files()) {
-                say(output, "校验文件> " + display(file.toString()));
+                say(output, "校验文件> " + TerminalText.visible(file.toString()));
             }
             say(output, "命令以当前用户权限运行，可读取对话、访问文件和网络；此授权不是安全审计或沙箱。");
             say(output, "只校验配置、字面量脚本和 trust_files；动态加载的其他代码不自动跟踪。");
@@ -77,17 +81,5 @@ public final class HookTrust {
     private static void say(PrintWriter output, String text) {
         output.println(text);
         output.flush();
-    }
-
-    private static String display(String text) {
-        StringBuilder result = new StringBuilder();
-        text.codePoints().forEach(code -> {
-            if (Character.isISOControl(code) || Character.getType(code) == Character.FORMAT) {
-                result.append(String.format("\\u%04x", code));
-            } else {
-                result.appendCodePoint(code);
-            }
-        });
-        return result.toString();
     }
 }

@@ -65,6 +65,11 @@ public final class TerminalTitle {
             public void context(int usedTokens) {
                 style.context(usedTokens);
             }
+
+            @Override
+            public void model(String model) {
+                style.model(model);
+            }
         };
     }
 

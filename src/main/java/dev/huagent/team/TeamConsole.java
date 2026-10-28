@@ -3,6 +3,7 @@ package dev.huagent.team;
 import dev.huagent.harness.EventHub;
 import dev.huagent.harness.InputPump;
 import dev.huagent.harness.TurnEvents;
+import dev.huagent.permission.ConfirmPrompt;
 import dev.huagent.prompt.PromptStyle;
 import dev.huagent.tool.ToolCall;
 
@@ -53,15 +54,22 @@ public final class TeamConsole implements AutoCloseable {
     /** 确认问答之后重画 Lead 的提示符，与 ChatLoop 使用同一样式。 */
     private final PromptStyle prompt;
     private final InputPump pump;
+    /** 队友确认提示的样式，与 Lead 的 PermissionGate 相同。 */
+    private final ConfirmPrompt confirmPrompt;
 
     public TeamConsole(BufferedReader terminal, PrintWriter output) {
         this(terminal, output, PromptStyle.plain());
     }
 
     public TeamConsole(BufferedReader terminal, PrintWriter output, PromptStyle prompt) {
+        this(terminal, output, prompt, ConfirmPrompt.full());
+    }
+
+    public TeamConsole(BufferedReader terminal, PrintWriter output, PromptStyle prompt, ConfirmPrompt confirmPrompt) {
         Objects.requireNonNull(terminal);
         this.output = Objects.requireNonNull(output);
         this.prompt = Objects.requireNonNull(prompt);
+        this.confirmPrompt = Objects.requireNonNull(confirmPrompt);
         this.pump = new InputPump(terminal, line -> events.add(line == null ? new End() : new Line(line)),
                 "terminal-input");
     }
@@ -192,11 +200,9 @@ public final class TeamConsole implements AutoCloseable {
         if (confirm.answer().isDone()) {
             return;
         }
-        say("权限确认> [" + confirm.member() + "] " + confirm.reason());
-        say("工具> " + confirm.call().name() + " [" + confirm.call().id() + "]");
-        say("参数> " + confirm.call().arguments());
         synchronized (output) {
-            output.print("允许队友 " + confirm.member() + " 本次调用？[y/N] ");
+            confirmPrompt.ask(output, "[" + confirm.member() + "] " + confirm.reason(), confirm.call(),
+                    "允许队友 " + confirm.member() + " 本次调用？");
             output.flush();
         }
         String answer = nextAnswer();

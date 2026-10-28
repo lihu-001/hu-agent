@@ -49,12 +49,13 @@ final class ViewCommands {
     static SlashCommand status(CommandSources sources) {
         return SlashCommand.local("status", "查看模型、工作目录、各项上限与已启用的机制", (argument, context) -> {
             AgentConfig config = sources.config();
-            StringBuilder text = new StringBuilder("状态> 模型 ").append(config.model());
+            StringBuilder text = new StringBuilder("状态> 模型 ").append(sources.currentModel());
             if (sources.goal() != null) {
-                text.append("，目标判断器 ").append(config.evaluatorModel())
+                text.append("，目标判断器 ").append(sources.evaluatorModel())
                         .append("（每轮最多自动续跑 ").append(sources.goal().blockCap()).append(" 次）");
             }
-            text.append("，接口 ").append(config.baseUrl()).append("，api-key 已配置（不显示）")
+            text.append("，接口 ").append(config.modelConfig().provider().label()).append(" ").append(config.baseUrl())
+                    .append("，api-key 已配置（不显示）")
                     .append("\n状态> 工作目录 ").append(config.workDirectory().toAbsolutePath().normalize())
                     .append("，项目配置 ").append(sources.projectDirectory().resolve(".agents"))
                     .append("\n状态> 每轮最多请求模型 ").append(config.maxModelCalls()).append(" 次；Shell 超时 ")
@@ -67,8 +68,8 @@ final class ViewCommands {
                             : "已开启（" + sources.team().names().size() + " 个队友）")
                     .append("；MCP server ").append(sources.mcp().servers().size()).append(" 个；工作流")
                     .append(sources.workflows() == null ? "未启用" : "已启用")
-                    .append("\n状态> 配置来自 ").append(HuHome.configFile())
-                    .append(" 与 HU_* 环境变量，修改后需重启。");
+                    .append("\n状态> 配置来自 ").append(HuHome.modelFile()).append("、").append(HuHome.configFile())
+                    .append(" 与 HU_* 环境变量，文件修改后需重启；/model 可仅在本次会话切换模型。");
             return CommandResult.print(text.toString());
         });
     }

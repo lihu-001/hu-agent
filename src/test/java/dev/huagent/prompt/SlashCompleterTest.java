@@ -36,9 +36,7 @@ class SlashCompleterTest {
     void onlyACommandNameAtLineStartIsCompleted() {
         for (String typed : List.of("", "hello", " /co", "/compact ", "/compact 保留", "/usr/bin/env", "/Co", "看 /co")) {
             assertEquals(List.of(), completer.candidates(typed, 0), typed);
-            assertFalse(completer.matches(typed), typed);
         }
-        assertTrue(completer.matches("/"));
     }
 
     @Test

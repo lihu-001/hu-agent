@@ -37,6 +37,16 @@ class PermissionGateTest {
         assertEquals(2, output.toString().split("权限确认>", -1).length - 1);
     }
 
+    @Test
+    void compactConfirmationIsOneLine() throws Exception {
+        StringWriter output = new StringWriter();
+        PermissionGate gate = new PermissionGate(new PermissionPolicy(new WorkspaceFiles(root)),
+                new BufferedReader(new StringReader("y\n")), new PrintWriter(output), null,
+                ConfirmPrompt.compact(false));
+        assertNull(gate.denialReason(call("shell", Map.of("command", "echo test"))));
+        assertEquals("【权限确认】shell：echo test  仅允许本次调用？[y/N] ", output.toString());
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"n", "no", "", " ", "yes all", "allow", "exit", "quit"})
     void otherAnswersDeny(String answer) throws Exception {

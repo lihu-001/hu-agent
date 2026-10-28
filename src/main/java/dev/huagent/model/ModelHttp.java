@@ -1,0 +1,80 @@
+package dev.huagent.model;
+
+import cn.hutool.core.util.StrUtil;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpResponse;
+import java.util.Locale;
+
+/** OpenAI 与 Anthropic 两种协议的客户端共用：基础地址与 api-key 校验、HTTP 失败分类。 */
+final class ModelHttp {
+    private ModelHttp() {
+    }
+
+    /** 返回去掉末尾斜杠的基础地址，客户端在后面拼接各自的接口路径。 */
+    static String baseUrl(String baseUrl, String apiKey, String model) {
+        if (StrUtil.isBlank(baseUrl) || StrUtil.isBlank(apiKey) || StrUtil.isBlank(model)) {
+            throw new IllegalArgumentException("base-url、api-key 和 model 不能为空");
+        }
+        URI base;
+        try {
+            base = URI.create(baseUrl.strip());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("base-url 格式无效");
+        }
+        if (!("http".equalsIgnoreCase(base.getScheme()) || "https".equalsIgnoreCase(base.getScheme()))
+                || base.getHost() == null || base.getUserInfo() != null
+                || base.getQuery() != null || base.getFragment() != null) {
+            throw new IllegalArgumentException("base-url 必须是 HTTP(S) 基础地址，不含认证信息、查询参数或片段");
+        }
+        return base.toString().replaceAll("/+$", "");
+    }
+
+    static String apiKey(String apiKey) {
+        String key = apiKey.strip();
+        if (key.contains("\r") || key.contains("\n")) {
+            throw new IllegalArgumentException("api-key 不能包含换行");
+        }
+        return key;
+    }
+
+    /** S15：把可恢复的失败分成限流与上下文超长两类，其余保持通用失败。正文可能含敏感信息，不进入异常消息。 */
+    static IOException failure(HttpResponse<String> response) {
+        int status = response.statusCode();
+        if (status == 429 || status == 503 || status == 529) {
+            return new ModelUnavailableException("模型接口返回 HTTP " + status
+                    + (status == 429 ? "（限流）" : "（服务暂不可用）"), retryAfterSeconds(response));
+        }
+        if ((status == 400 || status == 413) && looksLikeContextOverflow(response.body())) {
+            return new ContextTooLargeException("模型接口返回 HTTP " + status + "（上下文超长）");
+        }
+        return new IOException("模型接口返回 HTTP " + status);
+    }
+
+    /** 只接受数字秒形式；HTTP-date 与缺失都交给本地退避策略。 */
+    private static Long retryAfterSeconds(HttpResponse<String> response) {
+        String value = response.headers().firstValue("Retry-After").orElse(null);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.strip());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** 服务商对超上下文的措辞不一致，按常见错误码与文案匹配。 */
+    private static boolean looksLikeContextOverflow(String body) {
+        if (body == null) {
+            return false;
+        }
+        String text = body.toLowerCase(Locale.ROOT);
+        return text.contains("context_length_exceeded") || text.contains("maximum context length")
+                || text.contains("context length exceeded") || text.contains("prompt is too long")
+                || text.contains("input is too long") || text.contains("input tokens exceed")
+                || text.contains("context window") || text.contains("too many tokens")
+                || text.contains("request_too_large");
+    }
+}

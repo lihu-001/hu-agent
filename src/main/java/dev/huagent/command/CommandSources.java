@@ -8,6 +8,8 @@ import dev.huagent.goal.GoalController;
 import dev.huagent.hook.AgentHooks;
 import dev.huagent.mcp.McpManager;
 import dev.huagent.memory.MemoryStore;
+import dev.huagent.model.ModelClient;
+import dev.huagent.model.ModelSelection;
 import dev.huagent.schedule.ScheduleStore;
 import dev.huagent.skill.SkillCatalog;
 import dev.huagent.task.TaskStore;
@@ -28,7 +30,7 @@ public record CommandSources(AgentConfig config, Path projectDirectory, SkillCat
                              AgentHooks hooks, MemoryStore memories, TodoList todos, TaskStore tasks,
                              BackgroundManager background, ScheduleStore schedules, ZoneId zone,
                              WorkflowStore workflows, TeamManager team, GoalController goal,
-                             ContextCompactor compactor, TranscriptStore transcripts) {
+                             ContextCompactor compactor, TranscriptStore transcripts, ModelClient client) {
     public CommandSources {
         Objects.requireNonNull(config);
         Objects.requireNonNull(projectDirectory);
@@ -43,5 +45,14 @@ public record CommandSources(AgentConfig config, Path projectDirectory, SkillCat
         Objects.requireNonNull(zone);
         Objects.requireNonNull(compactor);
         Objects.requireNonNull(transcripts);
+        Objects.requireNonNull(client);
+    }
+
+    public String currentModel() {
+        return client instanceof ModelSelection selection ? selection.model() : config.model();
+    }
+
+    public String evaluatorModel() {
+        return config.goalEvaluatorModel() == null ? currentModel() : config.goalEvaluatorModel();
     }
 }

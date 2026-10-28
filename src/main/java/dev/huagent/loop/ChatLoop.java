@@ -16,6 +16,7 @@ import dev.huagent.hook.AgentHooks;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.model.ContextTooLargeException;
 import dev.huagent.model.ModelClient;
+import dev.huagent.model.ModelSelection;
 import dev.huagent.model.ModelUnavailableException;
 import dev.huagent.prompt.PromptStyle;
 import dev.huagent.todo.TodoReminder;
@@ -56,7 +57,7 @@ public final class ChatLoop {
     private final GoalController goal;
     /** S18：斜杠命令；为 null 时与 S17 行为一致。 */
     private final CommandRegistry commands;
-    /** false 时（hu 默认）不显示启动工具清单、模型请求与耗时、提醒和事件送达说明，工具调用只显示摘要。 */
+    /** false 时（hu 默认）不显示启动工具清单、模型请求与耗时、提醒和事件送达说明、工具调用与中间回复，只显示最终回答。 */
     private final boolean debug;
     /** 等待输入时的提示符样式；hu 用 FramedPrompt，其余构造器为 "你> "。 */
     private final PromptStyle prompt;
@@ -197,6 +198,9 @@ public final class ChatLoop {
             }
         }
         while (true) {
+            if (client instanceof ModelSelection selection) {
+                prompt.model(selection.model());
+            }
             prompt.context(contextTokens);
             prompt.begin(output);
             output.flush();
@@ -219,6 +223,7 @@ public final class ChatLoop {
             if (commands != null && !synthetic) {
                 // S18：斜杠命令（含 /goal）由注册表处理；不是命令形式的输入照常作为提示词。
                 CommandContext context = new CommandContext(history, definitions, output);
+                String previousModel = client instanceof ModelSelection selection ? selection.model() : null;
                 CommandResult result;
                 try {
                     result = commands.dispatch(line, context);
@@ -234,6 +239,10 @@ public final class ChatLoop {
                 // /clear 与 /compact 替换了历史：此后的轮次从新历史开始，上一次请求的 token 用量不再适用。
                 if (context.historyReplaced()) {
                     history = new ArrayList<>(context.history());
+                    contextTokens = -1;
+                }
+                // 切换模型保留历史，但旧模型的 token 计数不适用于新模型。
+                if (client instanceof ModelSelection selection && !selection.model().equals(previousModel)) {
                     contextTokens = -1;
                 }
                 if (result != null && result.kind() == CommandResult.Kind.EXIT) {
@@ -360,7 +369,8 @@ public final class ChatLoop {
                         detail(output, "模型响应> 耗时 " + elapsedMillis + " ms，工具调用 "
                                 + answer.toolCalls().size() + " 个");
                         request.add(answer);
-                        if (StrUtil.isNotBlank(answer.content())) {
+                        // 与工具调用一起返回的文字是中间过程，非 debug 时只显示不再调用工具的最终回答。
+                        if (StrUtil.isNotBlank(answer.content()) && (debug || answer.toolCalls().isEmpty())) {
                             output.println("助手> " + answer.content());
                         }
                         if (answer.toolCalls().isEmpty()) {
@@ -386,13 +396,11 @@ public final class ChatLoop {
                         }
                         boolean limitReached = step == maxModelCalls;
                         for (ToolCall call : answer.toolCalls()) {
-                            output.println(ToolTrace.request(call, debug));
-                            output.flush();
+                            detail(output, ToolTrace.request(call));
                             String result = limitReached ? "工具未执行：已达到本轮模型调用上限。"
                                     : registry.execute(call);
                             request.add(ChatMessage.tool(call.id(), result));
-                            output.println(ToolTrace.result(call, result, debug));
-                            output.flush();
+                            detail(output, ToolTrace.result(call, result));
                         }
                         // S05：提醒附加在本批最后一个工具结果后，不新增消息角色，协议顺序不变。
                         String nudge = reminder == null || limitReached ? null : reminder.afterToolBatch();

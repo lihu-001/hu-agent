@@ -1,5 +1,6 @@
 package dev.huagent.team;
 
+import dev.huagent.permission.ConfirmPrompt;
 import dev.huagent.tool.ToolCall;
 
 import org.junit.jupiter.api.Test;
@@ -102,6 +103,24 @@ class TeamConsoleTest {
         assertTrue(approved.get(5, TimeUnit.SECONDS));
         awaitText(buffer, "[输入] ");
         assertFalse(buffer.toString().contains("你> "), buffer.toString());
+        keyboard.close();
+        assertNull(lead.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void compactConfirmationIsOneLine() throws Exception {
+        StringWriter buffer = new StringWriter();
+        PipedWriter keyboard = new PipedWriter();
+        TeamConsole console = new TeamConsole(new BufferedReader(new PipedReader(keyboard)), new PrintWriter(buffer),
+                out -> out.print("[输入] "), ConfirmPrompt.compact(false));
+        BufferedReader prompts = console.prompts(() -> null);
+        CompletableFuture<Boolean> approved = CompletableFuture.supplyAsync(() -> confirm(console, "alice"));
+        CompletableFuture<String> lead = CompletableFuture.supplyAsync(() -> readLine(prompts));
+        awaitText(buffer, "[y/N] ");
+        assertEquals("【权限确认】shell：echo hi  允许队友 alice 本次调用？[y/N] ", buffer.toString());
+        keyboard.write("y\n");
+        keyboard.flush();
+        assertTrue(approved.get(5, TimeUnit.SECONDS));
         keyboard.close();
         assertNull(lead.get(5, TimeUnit.SECONDS));
     }

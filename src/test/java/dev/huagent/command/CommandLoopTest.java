@@ -82,7 +82,8 @@ class CommandLoopTest {
         assertTrue(stops.isEmpty());
         assertTrue(output.contains("输入 /help 查看斜杠命令。"), output);
         for (String expected : List.of("命令> 本地命令只在终端执行", "\n  /clear — ", "\n  * /goal [完成条件 | clear] — ",
-                "状态> 模型 fake，目标判断器 fake（每轮最多自动续跑 8 次），接口 http://localhost，api-key 已配置（不显示）",
+                "状态> 模型 fake，目标判断器 fake（每轮最多自动续跑 8 次），接口 OpenAI 格式自定义接口 http://localhost，"
+                        + "api-key 已配置（不显示）",
                 "团队模式未开启；MCP server 0 个；工作流已启用",
                 "工具> 共 31 个：\n  shell — ", "技能> 没有技能（目录 ",
                 "MCP> 本会话没有已连接的 MCP server", "Hook> 主 Agent 的回调按执行顺序共 2 个：",
@@ -95,6 +96,18 @@ class CommandLoopTest {
             assertTrue(output.contains(expected), expected + "\n---\n" + output);
         }
         assertFalse(output.contains("unused"), "api-key 不出现在输出中");
+    }
+
+    @Test
+    void modelCommandOnCustomClientStaysLocalAndPreservesConversation() throws Exception {
+        String output = run("第一轮\n/model\n/model another\n第二轮\nexit\n", 6, false);
+        assertEquals(List.of("第一轮", "第二轮"), prompts);
+        assertEquals(List.of("system", "user", "assistant", "user"),
+                mainRequests.get(1).stream().map(ChatMessage::role).toList());
+        assertEquals("第一轮", mainRequests.get(1).get(1).content());
+        assertTrue(output.contains("模型> 当前模型 fake"), output);
+        assertTrue(output.contains("当前客户端不支持会话内切换模型"), output);
+        assertFalse(output.contains("unused"), output);
     }
 
     @Test

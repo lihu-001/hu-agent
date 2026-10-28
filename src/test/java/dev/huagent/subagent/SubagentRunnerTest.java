@@ -93,18 +93,14 @@ class SubagentRunnerTest {
     }
 
     @Test
-    void nonDebugShowsToolSummaryOnly() throws Exception {
+    void nonDebugPrintsNothing() throws Exception {
         int[] calls = {0};
         SubagentRunner runner = runner((messages, definitions) -> ++calls[0] == 1
                 ? ChatMessage.assistant(null, List.of(new ToolCall("c1", "echo", "{}")))
                 : new ChatMessage("assistant", "完成"), 5, false);
         assertEquals("完成", runner.run("查找", "任务").text());
-        String output = buffer.toString();
-        assertTrue(output.lines().anyMatch(line -> line.equals("  子代理[查找] 工具> echo")), output);
-        assertTrue(output.contains("子代理[查找]   echo-result"), output);
-        assertFalse(output.contains("模型请求>"), output);
-        assertFalse(output.contains("完成>"), output);
-        assertFalse(output.contains("[c1]"), output);
+        assertEquals(List.of("echo"), executed);
+        assertEquals("", buffer.toString());
     }
 
     private SubagentRunner runner(ModelClient client, int maxCalls) {

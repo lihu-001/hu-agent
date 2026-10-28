@@ -281,7 +281,7 @@ public final class TeamMain {
         }
         // 唯一读终端的地方：此后所有确认和 Lead 的输入都从控制台的事件队列取。
         TeamConsole console = options == null ? new TeamConsole(terminal, output)
-                : new TeamConsole(terminal, output, options.prompt());
+                : new TeamConsole(terminal, output, options.prompt(), options.confirm());
         BufferedReader answers = console.answers();
         List<AgentHook> userHooks = HookTrust.load(projectDirectory, answers, output, trustStore);
         McpManager mcp = mcpStarter.start(answers, output);
@@ -378,12 +378,12 @@ public final class TeamMain {
         PermissionGate gate = options == null
                 ? new PermissionGate(new PermissionPolicy(files, mcp.allowed()), answers, output)
                 : new PermissionGate(new PermissionPolicy(files, mcp.allowed()), answers, output,
-                        options.events()::inSyntheticTurn);
+                        options.events()::inSyntheticTurn, options.confirm());
         ToolRegistry childTools = ToolUseMain.createTools(config, gate, hooks, List.of(new LoadSkillTool(catalog)));
         SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
                 SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), output, debug);
         // S16：工作流工具只给 Lead；队友没有，子代理也没有。null 时与 S15 完全相同。
-        WorkflowBinding workflow = workflows == null ? null : workflows.bind(runner, output);
+        WorkflowBinding workflow = workflows == null ? null : workflows.bind(runner, output, debug);
         ContextCompactor compactor = new ContextCompactor(client, transcripts, files.root(),
                 config.compactThresholdChars(), config.compactKeepToolResults(),
                 () -> todos.items().isEmpty() ? null : todos.render(), debug);
@@ -428,7 +428,7 @@ public final class TeamMain {
         // S18：命令只给 Lead；/clear 只清空 Lead 的对话，队友各自的历史不受影响。null 时与 S17 相同。
         CommandRegistry slash = commands == null ? null : commands.bind(new CommandSources(config, projectDirectory,
                 catalog, mcp, hooks, memories, todos, tasks, background, schedules, zone,
-                workflow == null ? null : workflow.store(), team, goal, compactor, transcripts), log);
+                workflow == null ? null : workflow.store(), team, goal, compactor, transcripts, client), log);
         ChatLoop loop = options == null
                 ? new ChatLoop(client, registry, config.maxModelCalls(),
                         systemPrompt(catalog, entries) + mcp.promptSuffix() + workflowSuffix + goalSuffix, hooks,
@@ -438,7 +438,7 @@ public final class TeamMain {
                         hooks, new TodoReminder(todos), compactor, background, options.events(), options.retry(),
                         goal, slash, options.debug(), options.prompt());
         if (startScheduler) {
-            scheduleManager.start();
+            scheduleManager.start(debug);
         }
         return new Session(loop, team, console, background, scheduleManager, terminal, output, mcp, options);
     }

@@ -201,7 +201,7 @@ public final class ScheduleMain {
                                     HarnessOptions options, WorkflowStarter workflows, GoalStarter goals,
                                     CommandStarter commands)
             throws IOException {
-        // 非 debug 时启动清单不显示（可用 /skills、/memory、/tasks 查看），扫描警告照常显示。
+        // 非 debug 时启动清单不显示（可用 /skills、/memory、/tasks、/workflows、/schedules 查看），扫描警告照常显示。
         boolean debug = options == null || options.debug();
         SkillCatalog catalog = SkillCatalog.scan(projectDirectory, warning -> print(output, warning));
         if (debug) {
@@ -226,13 +226,13 @@ public final class ScheduleMain {
         PermissionGate gate = options == null
                 ? new PermissionGate(new PermissionPolicy(files, mcp.allowed()), input, output)
                 : new PermissionGate(new PermissionPolicy(files, mcp.allowed()), input, output,
-                        options.events()::inSyntheticTurn);
+                        options.events()::inSyntheticTurn, options.confirm());
         // 子代理与 S11 相同：没有后台工具，也没有定时计划，不会在无人接收的情况下产生输出。
         ToolRegistry childTools = ToolUseMain.createTools(config, gate, hooks, List.of(new LoadSkillTool(catalog)));
         SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
                 SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), output, debug);
         // S16：工作流步骤复用同一个子代理运行器；null 时与 S15 完全相同。
-        WorkflowBinding workflow = workflows == null ? null : workflows.bind(runner, output);
+        WorkflowBinding workflow = workflows == null ? null : workflows.bind(runner, output, debug);
         TranscriptStore transcripts = new TranscriptStore(files.root().resolve(TranscriptStore.DIRECTORY_NAME));
         ContextCompactor compactor = new ContextCompactor(client, transcripts, files.root(),
                 config.compactThresholdChars(), config.compactKeepToolResults(),
@@ -274,7 +274,7 @@ public final class ScheduleMain {
         // S18：命令拿到主 Agent 的全部部件；只在终端执行，不新增工具也不改系统提示词。null 时与 S17 相同。
         CommandRegistry slash = commands == null ? null : commands.bind(new CommandSources(config, projectDirectory,
                 catalog, mcp, hooks, memories, todos, tasks, background, schedules, zone,
-                workflow == null ? null : workflow.store(), null, goal, compactor, transcripts),
+                workflow == null ? null : workflow.store(), null, goal, compactor, transcripts, client),
                 line -> print(output, line));
         ChatLoop loop = options == null
                 ? new ChatLoop(client, registry, config.maxModelCalls(),
@@ -285,7 +285,7 @@ public final class ScheduleMain {
                         hooks, new TodoReminder(todos), compactor, background, options.events(), options.retry(),
                         goal, slash, options.debug(), options.prompt());
         if (startScheduler) {
-            scheduleManager.start();
+            scheduleManager.start(debug);
         }
         return new Session(loop, background, scheduleManager, mcp);
     }

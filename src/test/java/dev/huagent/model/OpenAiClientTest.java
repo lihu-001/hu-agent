@@ -11,6 +11,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
@@ -19,6 +20,9 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -32,6 +36,9 @@ class OpenAiClientTest {
     private final AtomicReference<JSONObject> request = new AtomicReference<>();
     private final AtomicReference<String> authorization = new AtomicReference<>();
     private final AtomicReference<String> method = new AtomicReference<>();
+    private final CountDownLatch requestReceived = new CountDownLatch(1);
+    private final CountDownLatch responseRelease = new CountDownLatch(1);
+    private volatile boolean holdResponse;
 
     @BeforeEach
     void startServer() throws IOException {
@@ -41,6 +48,17 @@ class OpenAiClientTest {
                 method.set(exchange.getRequestMethod());
                 authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
                 request.set(JSON.parseObject(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+                if (holdResponse) {
+                    requestReceived.countDown();
+                    try {
+                        if (!responseRelease.await(10, TimeUnit.SECONDS)) {
+                            throw new IOException("Timed out waiting to release response");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
                 if (delayMillis > 0) {
                     try {
                         Thread.sleep(delayMillis);
@@ -76,6 +94,61 @@ class OpenAiClientTest {
         assertFalse(request.get().getBooleanValue("stream"));
         assertFalse(request.get().containsKey("tools"));
         assertEquals("你好", request.get().getJSONArray("messages").getJSONObject(1).getString("content"));
+    }
+
+    @Test
+    void switchesSubsequentRequestsWithoutChangingInFlightRequest() throws Exception {
+        OpenAiClient client = client(baseUrl, Duration.ofSeconds(10));
+        List<ChatMessage> history = List.of(new ChatMessage("user", "你好"));
+        holdResponse = true;
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var inFlight = executor.submit(() -> client.complete(history, List.of()));
+            try {
+                assertTrue(requestReceived.await(5, TimeUnit.SECONDS));
+                assertFalse(inFlight.isDone());
+                assertEquals("test-model", request.get().getString("model"));
+                assertEquals("Bearer test-key", authorization.get());
+
+                client.selectModel("provider/next-model");
+
+                assertEquals("provider/next-model", client.model());
+                assertEquals("test-model", request.get().getString("model"));
+                assertFalse(inFlight.isDone());
+            } finally {
+                responseRelease.countDown();
+            }
+            assertEquals("你好，小李", inFlight.get(5, TimeUnit.SECONDS).content());
+        }
+        JSONObject firstRequest = request.get();
+        client.complete(history, List.of(), tokens -> {});
+        assertEquals("provider/next-model", request.get().getString("model"));
+        assertEquals("Bearer test-key", authorization.get());
+        assertEquals(firstRequest.getJSONArray("messages"), request.get().getJSONArray("messages"));
+
+        client.selectModel("provider/third-model");
+        client.complete(history, List.of());
+        assertEquals("provider/third-model", request.get().getString("model"));
+        assertEquals("Bearer test-key", authorization.get());
+        assertEquals("test-model", firstRequest.getString("model"));
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {" ", " leading", "trailing ", "two names", "a\tb", "a\nb", "a\rb",
+            "a\0b", "a\033b", "a\177b", "a\u0085b", "a\u00a0b", "a\u2003b", "a\u202fb",
+            "a\u200bb", "a\ufeffb", "a\u202eb"})
+    void invalidSelectionPreservesModelForNextRequest(String name) throws Exception {
+        OpenAiClient client = client(baseUrl, Duration.ofSeconds(5));
+        client.selectModel("provider/selected");
+        assertNull(request.get());
+
+        assertThrows(IllegalArgumentException.class, () -> client.selectModel(name));
+
+        assertEquals("provider/selected", client.model());
+        assertNull(request.get());
+        client.complete(List.of(new ChatMessage("user", "你好")), List.of());
+        assertEquals("provider/selected", request.get().getString("model"));
+        assertEquals("Bearer test-key", authorization.get());
     }
 
     @Test

@@ -16,8 +16,9 @@ import dev.huagent.harness.ModelRetryPolicy;
 import dev.huagent.hook.HookTrustStore;
 import dev.huagent.mcp.McpManager;
 import dev.huagent.mcp.McpTrustStore;
+import dev.huagent.permission.ConfirmPrompt;
 import dev.huagent.model.ModelClient;
-import dev.huagent.model.OpenAiClient;
+import dev.huagent.model.ModelClients;
 import dev.huagent.prompt.FramedPrompt;
 import dev.huagent.prompt.LineEditor;
 import dev.huagent.prompt.PromptStyle;
@@ -34,7 +35,6 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -46,7 +46,8 @@ import java.util.function.IntSupplier;
 
 /**
  * hu 命令入口：在当前目录启动交互会话，装配与 java-agent 教程 S18 的 CommandMain 相同（全部机制加斜杠命令）。
- * 与 S18 的区别只在位置：配置读 HuHome 下的 config.properties（缺失时首次引导填写），
+ * 与 S18 的区别：模型接口读 HuHome 下的 model.properties（缺失时首次引导选择接口类型并填写，支持 OpenAI 与
+ * Anthropic 协议），其他设置读同目录的 config.properties；
  * 工作目录与项目级 .agents/（Hook、MCP、技能）都是运行 hu 时所在的目录。
  */
 public final class HuMain {
@@ -72,14 +73,15 @@ public final class HuMain {
         boolean failed = false;
         try {
             Path configFile = HuHome.configFile();
+            Path modelFile = HuHome.modelFile();
             Map<String, String> environment = System.getenv();
-            if (Files.notExists(configFile) && !AgentConfig.coveredByEnvironment(environment)
-                    && !ConfigSetup.run(input, output, console, configFile)) {
+            if (!AgentConfig.modelConfigured(configFile, modelFile, environment)
+                    && !ConfigSetup.run(input, output, console, modelFile, configFile)) {
                 output.println();
                 output.println("hu> 未完成配置，已退出。");
                 return;
             }
-            AgentConfig config = AgentConfig.load(configFile, environment);
+            AgentConfig config = AgentConfig.load(configFile, modelFile, environment);
             // 首次配置引导用 Console 读取（API Key 不回显）；之后由行编辑器接管终端，Console 不再读写。
             AtomicReference<CommandRegistry> registry = new AtomicReference<>();
             editor = console == null ? null : LineEditor.open(() -> {
@@ -102,7 +104,7 @@ public final class HuMain {
                 return bound;
             };
             run(config, input, output, debug, title == null ? prompt : title.prompt(prompt),
-                    splash(console, columns), commands, editor != null);
+                    confirmPrompt(console, debug), splash(console, columns), commands, editor != null);
         } catch (IllegalArgumentException e) {
             failed = true;
             output.println("配置错误：" + e.getMessage());
@@ -122,17 +124,18 @@ public final class HuMain {
     }
 
     private static void run(AgentConfig config, BufferedReader input, PrintWriter output, boolean debug,
-                            PromptStyle prompt, String splash, CommandStarter commands, boolean completion)
+                            PromptStyle prompt, ConfirmPrompt confirm, String splash, CommandStarter commands,
+                            boolean completion)
             throws IOException {
         // 启动页先于会话装配输出：MCP server 启动可能较慢，Hook 与 MCP 的授权确认也排在它下面。
         if (splash != null) {
             output.print(splash);
             output.flush();
         }
-        ModelClient client = new OpenAiClient(config.baseUrl(), config.apiKey(), config.model(), Duration.ofSeconds(60));
-        // 判断器可以单独配置一个更便宜的模型；未配置时与主 Agent 共用客户端。
+        ModelClient client = ModelClients.create(config.modelConfig(), Duration.ofSeconds(60));
+        // 判断器可以单独配置一个更便宜的模型（同一接口）；未配置时与主 Agent 共用客户端。
         ModelClient evaluator = config.goalEvaluatorModel() == null ? client
-                : new OpenAiClient(config.baseUrl(), config.apiKey(), config.goalEvaluatorModel(),
+                : ModelClients.create(config.modelConfig().withModel(config.goalEvaluatorModel()),
                 Duration.ofSeconds(60));
         Path projectDirectory = ProjectDirectory.resolve();
         AgentConsole agentConsole = new AgentConsole(input, output);
@@ -140,14 +143,16 @@ public final class HuMain {
         // 事件到达（定时入队、后台完成唤醒）时叫醒空闲的循环。
         events.addListener(agentConsole::notifyEvents);
         HarnessOptions options = new HarnessOptions(events,
-                new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES), agentConsole.prompts(), debug, prompt);
+                new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES), agentConsole.prompts(), debug, prompt,
+                confirm);
         TeamMain.Session session = TeamMain.createSession(config, client, agentConsole.answers(), output,
                 projectDirectory, List.of(), HookTrustStore.userStore(), new TodoList(),
                 ZoneId.systemDefault(), Clock.systemDefaultZone(), true, TeamManager.DEFAULT_IDLE_SCAN,
                 McpManager.Starter.of(projectDirectory, McpTrustStore.userStore(), System.getenv()),
                 options, WorkflowStarter.of(config), GoalStarter.of(evaluator, config.goalBlockCap()), commands);
         List<String> servers = session.mcp().servers();
-        String location = "模型 " + config.model() + " · 工作目录 " + config.workDirectory().toAbsolutePath().normalize();
+        String location = "模型 " + config.model() + "（" + config.modelConfig().provider().label() + "）· 工作目录 "
+                + config.workDirectory().toAbsolutePath().normalize();
         output.println(splash == null ? "hu-agent " + HuVersion.current() + " · " + location : location);
         output.println((completion ? "输入 / 列出命令，Tab 或 ↑↓ 选择" : "输入 /help 查看命令") + "，exit 退出。"
                 + (servers.isEmpty() ? "" : "MCP 已连接：" + String.join("、", servers) + "。")
@@ -157,12 +162,20 @@ public final class HuMain {
     }
 
     /**
-     * 交互终端上在输入上方画分隔线标出用户输入，线上显示模型与上下文用量（最大值取 openai.max-context-tokens）；
+     * 交互终端上在输入上方画分隔线标出用户输入，线上显示模型与上下文用量（最大值取 model.properties 的 max-context-tokens）；
      * 输入输出被重定向（没有 Console）时保留 "你> "，日志里不出现分隔线。
      */
     static PromptStyle promptStyle(Console console, AgentConfig config, IntSupplier columns) {
         return console == null ? PromptStyle.plain()
                 : FramedPrompt.forTerminal(console.charset(), columns, config.model(), config.maxContextTokens());
+    }
+
+    /**
+     * 权限确认：调试模式保持原来的多行样式；默认压成以【权限确认】开头的一行，
+     * 交互终端能解释 ANSI 时（与启动页的判断相同）显示为黄色，输出被重定向时不带颜色。
+     */
+    static ConfirmPrompt confirmPrompt(Console console, boolean debug) {
+        return ConfirmPrompt.of(debug, console != null && Splash.ColorSupport.system() != Splash.ColorSupport.NONE);
     }
 
     /** 交互终端上显示启动页（像素字、版本与一条随机提示）；没有 Console 时返回 null，只打印一行版本信息。 */
@@ -207,13 +220,15 @@ public final class HuMain {
 
                 选项：
                   -d, --debug      调试模式：显示每次模型请求与耗时、内置 Hook 日志、微压缩、
-                                   工具调用 ID 和完整工具结果；默认只显示对话与工具调用摘要
+                                   中间回复、工具调用与完整工具结果；默认只显示对话与最终回答
                   -h, --help       显示本帮助
                   -v, --version    显示版本
 
-                配置：%s
-                  环境变量 HU_BASE_URL、HU_MODEL、HU_API_KEY 优先于配置文件。
+                配置：
+                  模型接口  %s（首次运行时引导填写，删除后重新引导）
+                  其他设置  %s
+                  环境变量 HU_PROVIDER、HU_BASE_URL、HU_MODEL、HU_API_KEY 优先于模型配置文件。
                   项目级 Hook、MCP 与技能读取当前目录的 .agents/。
-                """.formatted(HuHome.configFile());
+                """.formatted(HuHome.modelFile(), HuHome.configFile());
     }
 }

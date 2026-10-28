@@ -9,7 +9,7 @@ import java.util.function.IntSupplier;
 /**
  * 只在每次输入上方画一条分隔线：空一行、分隔线、提示符 "❯ "，用户回车后空一行再输出回复。
  * 分隔线只标出用户输入，回复与工具输出前后都不画线，两者靠分隔线与 "❯ " 区分。
- * 分隔线里嵌入状态："── 模型 ── 上下文剩余 998.2K / 最大 1M token ─────"。最大值来自 openai.max-context-tokens，
+ * 分隔线里嵌入状态："── 模型 ── 上下文剩余 998.2K（99%）/ 最大 1M token ─────"。最大值来自 max-context-tokens（model.properties），
  * 用量由 ChatLoop 经 context 告知（接口 usage）；用量未知时只显示最大值，终端太窄放不下时退回不带状态的分隔线。
  * 只输出普通字符、不移动光标：Windows 上 Java 不会开启控制台的 ANSI 处理。
  * 分隔线每次按终端当前列数重新计算，比整行少一列，避免写满一行时部分终端再多换一行。
@@ -24,7 +24,7 @@ public final class FramedPrompt implements PromptStyle {
     private final String marker;
     private final char rule;
     private final IntSupplier columns;
-    private final String model;
+    private volatile String model;
     private final int maxContextTokens;
     /** TeamConsole 在另一线程重画提示符，读到的是最近一次 context 的结果。 */
     private volatile int usedTokens = -1;
@@ -38,8 +38,12 @@ public final class FramedPrompt implements PromptStyle {
         this.marker = Objects.requireNonNull(marker);
         this.rule = rule;
         this.columns = Objects.requireNonNull(columns);
-        this.model = model == null || model.isBlank() ? null : model.strip();
+        this.model = normalizeModel(model);
         this.maxContextTokens = maxContextTokens;
+    }
+
+    private static String normalizeModel(String model) {
+        return model == null || model.isBlank() ? null : model.strip();
     }
 
     /**
@@ -55,6 +59,11 @@ public final class FramedPrompt implements PromptStyle {
     @Override
     public void context(int usedTokens) {
         this.usedTokens = usedTokens;
+    }
+
+    @Override
+    public void model(String model) {
+        this.model = normalizeModel(model);
     }
 
     @Override
@@ -75,7 +84,9 @@ public final class FramedPrompt implements PromptStyle {
         int width = Math.max(MIN_RULE, columns.getAsInt() - 1);
         String bar = String.valueOf(rule).repeat(LEAD);
         String context = context();
-        String status = model == null ? context : context == null ? model : model + " " + bar + " " + context;
+        String currentModel = model;
+        String status = currentModel == null ? context
+                : context == null ? currentModel : currentModel + " " + bar + " " + context;
         if (status != null) {
             String head = bar + " " + status + " ";
             int used = displayWidth(head);
@@ -92,8 +103,16 @@ public final class FramedPrompt implements PromptStyle {
         }
         int used = usedTokens;
         String max = "最大 " + abbreviate(maxContextTokens) + " token";
-        return used < 0 ? "上下文" + max
-                : "上下文剩余 " + abbreviate(Math.max(0, maxContextTokens - used)) + " / " + max;
+        if (used < 0) {
+            return "上下文" + max;
+        }
+        int remaining = Math.max(0, maxContextTokens - used);
+        return "上下文剩余 " + abbreviate(remaining) + "（" + percent(remaining) + "%）/ " + max;
+    }
+
+    /** 剩余占最大值的百分比，向下取整：只有完全没用时才显示 100%，余量不足 1% 时显示 0%。 */
+    private long percent(int remaining) {
+        return remaining * 100L / maxContextTokens;
     }
 
     /** 38234 → 38.2K，50000 → 50K，1200000 → 1.2M。 */
@@ -107,7 +126,7 @@ public final class FramedPrompt implements PromptStyle {
     }
 
     /** 终端显示列数：中日韩文字、全角符号与常见 emoji 占两列，其余一列。 */
-    static int displayWidth(String text) {
+    public static int displayWidth(String text) {
         int width = 0;
         for (int i = 0; i < text.length(); ) {
             int codePoint = text.codePointAt(i);

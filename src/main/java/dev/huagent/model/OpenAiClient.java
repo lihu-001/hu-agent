@@ -18,40 +18,32 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.function.IntConsumer;
 
-public final class OpenAiClient implements ModelClient {
+public final class OpenAiClient implements ModelClient, ModelSelection {
     private final HttpClient httpClient;
     private final URI endpoint;
     private final String apiKey;
-    private final String model;
+    private volatile String model;
     private final Duration timeout;
 
     public OpenAiClient(String baseUrl, String apiKey, String model, Duration timeout) {
-        if (StrUtil.isBlank(baseUrl) || StrUtil.isBlank(apiKey) || StrUtil.isBlank(model)) {
-            throw new IllegalArgumentException("openai.base-url、openai.api-key 和 openai.model 不能为空");
-        }
-        URI base;
-        try {
-            base = URI.create(baseUrl.strip());
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("openai.base-url 格式无效");
-        }
-        if (!("http".equalsIgnoreCase(base.getScheme()) || "https".equalsIgnoreCase(base.getScheme()))
-                || base.getHost() == null || base.getUserInfo() != null
-                || base.getQuery() != null || base.getFragment() != null) {
-            throw new IllegalArgumentException("openai.base-url 必须是 HTTP(S) 基础地址，不含认证信息、查询参数或片段");
-        }
-        this.endpoint = URI.create(base.toString().replaceAll("/+$", "") + "/chat/completions");
-        this.apiKey = apiKey.strip();
-        if (this.apiKey.contains("\r") || this.apiKey.contains("\n")) {
-            throw new IllegalArgumentException("openai.api-key 不能包含换行");
-        }
+        this.endpoint = URI.create(ModelHttp.baseUrl(baseUrl, apiKey, model) + "/chat/completions");
+        this.apiKey = ModelHttp.apiKey(apiKey);
         this.model = model.strip();
         this.timeout = timeout;
         this.httpClient = HttpClient.newBuilder().connectTimeout(timeout).build();
+    }
+
+    @Override
+    public String model() {
+        return model;
+    }
+
+    @Override
+    public void selectModel(String name) {
+        model = ModelSelection.checkedModel(name);
     }
 
     @Override
@@ -90,7 +82,7 @@ public final class OpenAiClient implements ModelClient {
         HttpResponse<String> response = httpClient.send(request,
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw failure(response);
+            throw ModelHttp.failure(response);
         }
         ChatMessage answer = parseAnswer(response.body());
         int tokens = contextTokens(response.body());
@@ -118,44 +110,6 @@ public final class OpenAiClient implements ModelClient {
         } catch (RuntimeException e) {
             return -1;
         }
-    }
-
-    /** S15：把可恢复的失败分成限流与上下文超长两类，其余保持通用失败。正文可能含敏感信息，不进入异常消息。 */
-    private IOException failure(HttpResponse<String> response) {
-        int status = response.statusCode();
-        if (status == 429 || status == 503 || status == 529) {
-            return new ModelUnavailableException("模型接口返回 HTTP " + status
-                    + (status == 429 ? "（限流）" : "（服务暂不可用）"), retryAfterSeconds(response));
-        }
-        if ((status == 400 || status == 413) && looksLikeContextOverflow(response.body())) {
-            return new ContextTooLargeException("模型接口返回 HTTP " + status + "（上下文超长）");
-        }
-        return new IOException("模型接口返回 HTTP " + status);
-    }
-
-    /** 只接受数字秒形式；HTTP-date 与缺失都交给本地退避策略。 */
-    private static Long retryAfterSeconds(HttpResponse<String> response) {
-        String value = response.headers().firstValue("Retry-After").orElse(null);
-        if (value == null) {
-            return null;
-        }
-        try {
-            return Long.parseLong(value.strip());
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
-    /** 服务商对超上下文的措辞不一致，按常见错误码与文案匹配。 */
-    private static boolean looksLikeContextOverflow(String body) {
-        if (body == null) {
-            return false;
-        }
-        String text = body.toLowerCase(Locale.ROOT);
-        return text.contains("context_length_exceeded") || text.contains("maximum context length")
-                || text.contains("context length exceeded") || text.contains("prompt is too long")
-                || text.contains("input is too long") || text.contains("input tokens exceed")
-                || text.contains("context window") || text.contains("too many tokens");
     }
 
     private JSONObject serializeMessage(ChatMessage message) {

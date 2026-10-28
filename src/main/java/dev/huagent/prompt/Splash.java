@@ -79,6 +79,11 @@ public final class Splash {
             return colorTerm.equals("truecolor") || colorTerm.equals("24bit")
                     || windows && environment.containsKey("WT_SESSION") ? TRUECOLOR : PALETTE_256;
         }
+
+        /** 按当前进程的环境变量与操作系统判断。 */
+        public static ColorSupport system() {
+            return detect(System.getenv(), System.getProperty("os.name", "").startsWith("Windows"));
+        }
     }
 
     /**
@@ -87,8 +92,7 @@ public final class Splash {
      * 其余情况画成 "##"。
      */
     public static String forTerminal(Charset charset, int columns, String version) {
-        ColorSupport color = ColorSupport.detect(System.getenv(),
-                System.getProperty("os.name", "").startsWith("Windows"));
+        ColorSupport color = ColorSupport.system();
         CharsetEncoder encoder = charset.newEncoder();
         boolean blocks = encoder.canEncode('█') && (encoder.canEncode('❯') || color != ColorSupport.NONE);
         // 不用 RandomGenerator.getDefault()：安装的 Temurin JRE 17.0.20.1 上它找不到默认算法 L32X64MixRandom，直接抛异常。

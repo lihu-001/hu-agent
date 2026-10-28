@@ -17,6 +17,7 @@ import java.io.PipedOutputStream;
 import java.io.PrintWriter;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -25,6 +26,13 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 用 JLine 的流终端模拟按键：键盘写进管道，屏幕输出收集到字节数组。 */
 class LineEditorTest {
+    /** xterm 的方向键序列（JLine 发出 keypad_xmit 后终端使用应用模式）。 */
+    private static final String DOWN = "\u001bOB";
+    private static final String UP = "\u001bOA";
+    /** JLine 开启、关闭按键鼠标跟踪时写出的序列（1000：按键与滚轮）。 */
+    private static final String TRACK_MOUSE = "\u001b[?1000h";
+    private static final String UNTRACK_MOUSE = "\u001b[?1000l";
+
     private PipedOutputStream keyboard;
     private ByteArrayOutputStream screen;
     private LineEditor editor;
@@ -37,8 +45,12 @@ class LineEditorTest {
         Terminal terminal = TerminalBuilder.builder().system(false).streams(in, screen).type("xterm")
                 .stdinEncoding(StandardCharsets.UTF_8).stdoutEncoding(StandardCharsets.UTF_8)
                 .size(new Size(80, 24)).build();
-        editor = new LineEditor(terminal, () -> List.of(
-                SlashCommand.local("status", "查看状态", (a, c) -> CommandResult.print(""))));
+        List<SlashCommand> commands = new ArrayList<>();
+        commands.add(SlashCommand.local("status", "查看状态", (a, c) -> CommandResult.print("")));
+        for (int i = 1; i <= 15; i++) {
+            commands.add(SlashCommand.local("cmd%02d".formatted(i), "命令 " + i, (a, c) -> CommandResult.print("")));
+        }
+        editor = new LineEditor(terminal, () -> commands);
     }
 
     @AfterEach
@@ -66,6 +78,14 @@ class LineEditorTest {
 
         CompletableFuture<String> line = read("");
         awaitScreen("[y/N]");
+        type("y\r");
+        assertEquals("y", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void percentSignsInThePromptAreShownVerbatim() throws Exception {
+        // 不转义时 JLine 会把 %Y 等丢掉、把 %{…%} 之间的文字隐藏。
+        CompletableFuture<String> line = read("shell：date +%Y-%m-%d %{x%} 100% [y/N] ");
         type("y\r");
         assertEquals("y", line.get(5, TimeUnit.SECONDS));
     }
@@ -144,22 +164,61 @@ class LineEditorTest {
 
     @Test
     void downArrowSelectsAmongCommandsButBrowsesHistoryOtherwise() throws Exception {
-        // xterm 的方向键序列（JLine 发出 keypad_xmit 后终端使用应用模式）。
-        String down = "\u001bOB";
-        String up = "\u001bOA";
         CompletableFuture<String> first = read("A> ");
         type("上一条\r");
         assertEquals("上一条", first.get(5, TimeUnit.SECONDS));
 
-        // 命令前缀后按 ↓：进入候选选择，唯一候选直接填入；回车提交。
+        // 命令前缀后按 ↓：选中候选，第一次回车填入，第二次回车提交。
         CompletableFuture<String> command = read("B> ");
-        type("/st" + down + "\r");
+        type("/st" + DOWN + "\r\r");
         assertEquals("/status ", command.get(5, TimeUnit.SECONDS));
 
-        // 空行上 ↑ 照常翻历史，取回最近一条（JLine 记历史时去掉了行尾空格）。
+        // 空行上 ↑ 照常翻历史，取回最近一条（JLine 记历史时去掉了行尾空格）；没有选中项时回车直接提交。
         CompletableFuture<String> recalled = read("C> ");
-        type(up + "\r");
+        type(UP + "\r");
         assertEquals("/status", recalled.get(5, TimeUnit.SECONDS));
+    }
+
+    /** 列表的版面见 SlashMenuTest；JLine 重画时只写出变化的字符，这里只看结果。 */
+    @Test
+    void slashListShowsTenCommandsAndArrowsScrollIt() throws Exception {
+        CompletableFuture<String> line = read("A> ");
+        type("/cmd");
+        awaitScreen("1-10 / 1");
+        assertFalse(screen().contains("/cmd11"), "第 11 个候选要滚动才出现：" + screen());
+
+        type(DOWN.repeat(11) + "\r\r");
+        assertEquals("/cmd11 ", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void mouseWheelScrollsTheList() throws Exception {
+        CompletableFuture<String> line = read("A> ");
+        type("/cmd");
+        awaitScreen(TRACK_MOUSE);
+        // SGR 编码的滚轮事件：65 向下，64 向上。滚到第 4 行开始，↓ 选中可见的第一行。
+        String wheelDown = "\u001b[<65;5;3M";
+        String wheelUp = "\u001b[<64;5;3M";
+        type(wheelDown.repeat(4) + wheelUp + DOWN + "\r\r");
+        assertEquals("/cmd04 ", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void mouseIsTrackedOnlyWhileTheListIsShown() throws Exception {
+        CompletableFuture<String> prose = read("A> ");
+        type("看 /cmd\r");
+        assertEquals("看 /cmd", prose.get(5, TimeUnit.SECONDS));
+        assertFalse(screen().contains(TRACK_MOUSE), "不在行首的 / 不显示列表：" + screen());
+
+        CompletableFuture<String> line = read("B> ");
+        type("/cmd");
+        // 上一次读取结束时 JLine 自己也会关闭跟踪，只看开启之后的输出。
+        int shown = awaitScreen(TRACK_MOUSE).length();
+        // 输入空格后不再是命令前缀，列表收起，终端恢复自己的鼠标操作（选择文字、滚动回看）。
+        type(" x");
+        awaitScreen(UNTRACK_MOUSE, shown);
+        type("\r");
+        assertEquals("/cmd x", line.get(5, TimeUnit.SECONDS));
     }
 
     /**
@@ -197,8 +256,13 @@ class LineEditorTest {
     }
 
     private String awaitScreen(String text) throws InterruptedException {
+        return awaitScreen(text, 0);
+    }
+
+    /** 等屏幕输出的第 from 个字符之后出现 text。 */
+    private String awaitScreen(String text, int from) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (!screen().contains(text)) {
+        while (screen().indexOf(text, from) < 0) {
             if (System.nanoTime() > deadline) {
                 fail("屏幕上没有出现 " + text + "：" + screen());
             }

@@ -6,6 +6,7 @@ import dev.huagent.compact.TranscriptStore;
 import dev.huagent.goal.GoalCommand;
 import dev.huagent.goal.GoalController;
 import dev.huagent.model.ChatMessage;
+import dev.huagent.model.ModelSelection;
 import dev.huagent.tool.ToolDefinition;
 
 import java.io.IOException;
@@ -22,7 +23,7 @@ final class SessionCommands {
     }
 
     static List<SlashCommand> create(CommandSources sources) {
-        List<SlashCommand> commands = new ArrayList<>(List.of(exit(), clear(sources), compact(sources),
+        List<SlashCommand> commands = new ArrayList<>(List.of(exit(), model(sources), clear(sources), compact(sources),
                 context(sources), export(sources)));
         if (sources.goal() != null) {
             commands.add(goal(sources.goal()));
@@ -33,6 +34,34 @@ final class SessionCommands {
     static SlashCommand exit() {
         return SlashCommand.local("exit", "退出会话，与不带斜杠的 exit / quit 相同",
                 (argument, context) -> CommandResult.exit()).withAliases("quit");
+    }
+
+    static SlashCommand model(CommandSources sources) {
+        return SlashCommand.localWithArgument("model", "/model [模型名称]",
+                "查看当前模型，或切换同一接口的模型（仅本次会话）", (argument, context) -> {
+            if (argument.isEmpty()) {
+                return CommandResult.print("模型> 当前模型 " + sources.currentModel() + "（"
+                        + sources.config().modelConfig().provider().label() + "）"
+                        + "\n模型> 用法：/model <模型名称>，仅本次会话生效，接口、密钥与 token 上限不变。");
+            }
+            if (!(sources.client() instanceof ModelSelection selection)) {
+                return CommandResult.print("模型> 当前客户端不支持会话内切换模型，未切换。");
+            }
+            String previous = selection.model();
+            try {
+                selection.selectModel(argument);
+            } catch (IllegalArgumentException e) {
+                return CommandResult.print("模型> 模型名称必须是一个不含空白、控制字符或不可见字符的名称，未切换。"
+                        + "用法：/model <模型名称>");
+            }
+            if (previous.equals(selection.model())) {
+                return CommandResult.print("模型> 已在使用 " + previous + "，无需切换。");
+            }
+            return CommandResult.print("模型> 已从 " + previous + " 切换到 " + selection.model()
+                    + "，保留当前对话，仅本次会话生效；未请求接口验证模型可用性。"
+                    + "\n模型> 共用客户端的子代理、队友、压缩与默认目标判断器从后续请求起生效；"
+                    + "已发出的请求和单独配置的目标判断器不变。接口、密钥与 token 上限不变。");
+        });
     }
 
     /**

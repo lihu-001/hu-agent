@@ -2,9 +2,6 @@ package dev.huagent.prompt;
 
 import dev.huagent.command.SlashCommand;
 import org.jline.reader.Candidate;
-import org.jline.reader.Completer;
-import org.jline.reader.LineReader;
-import org.jline.reader.ParsedLine;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -14,34 +11,23 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
- * 斜杠命令补全：光标前的全部输入是 "/命令名前缀" 时，给出名称或别名以此开头的命令。
+ * 斜杠命令补全的候选（SlashMenu 显示）：输入是 "/命令名前缀" 时，给出名称或别名以此开头的命令。
  * 参数、普通提示词和不是命令形式的输入（如 /usr/bin/env）都没有候选，行编辑器也就不显示列表。
- * 命令（含技能命令）在会话装配之后才确定，所以每次补全时现取。
+ * 命令（含技能命令）在会话装配之后才确定，所以每次现取。
  *
- * <p>说明直接拼进候选的显示文字：JLine 把单独的说明放在括号里右对齐，这里改成名称对齐成一列、说明紧跟其后，
- * 过长时按终端宽度截断，每个候选只占一行。
+ * <p>候选的显示文字是名称对齐成一列、说明紧跟其后，过长时按终端宽度截断，每个候选只占一行。
  */
-final class SlashCompleter implements Completer {
+final class SlashCompleter {
     /** 与 CommandLine 的命令名规则一致，允许只输入了 "/"。 */
     private static final Pattern PREFIX = Pattern.compile("/[a-z0-9-]*");
     private static final String GAP = "  ";
-    /** 列表的缩进与 JLine 要求的行尾余量。 */
-    private static final int MARGIN = 4;
+    /** 列表的缩进与行尾余量，写满一行时部分终端会多换一行。 */
+    static final int MARGIN = 4;
 
     private final Supplier<? extends Collection<SlashCommand>> commands;
 
     SlashCompleter(Supplier<? extends Collection<SlashCommand>> commands) {
         this.commands = Objects.requireNonNull(commands);
-    }
-
-    @Override
-    public void complete(LineReader reader, ParsedLine line, List<Candidate> candidates) {
-        candidates.addAll(candidates(line.line().substring(0, line.cursor()), reader.getTerminal().getWidth()));
-    }
-
-    /** 光标前的输入 typed 是否有候选。 */
-    boolean matches(String typed) {
-        return !candidates(typed, 0).isEmpty();
     }
 
     /** typed 是光标前的全部输入，不是命令前缀时返回空列表；columns 是终端列数，不为正时说明不截断。 */

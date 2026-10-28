@@ -5,6 +5,7 @@ import dev.huagent.tool.ToolCall;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.util.Objects;
 import java.util.function.BooleanSupplier;
 
 public final class PermissionGate implements ToolPermission {
@@ -13,6 +14,8 @@ public final class PermissionGate implements ToolPermission {
     private final PrintWriter output;
     /** S15：程序事件发起的哨兵轮次不能交互确认；为 null 时与 S14 相同。 */
     private final BooleanSupplier asyncTurn;
+    /** 确认提示的样式；hu 默认为 compact，其余构造器为 full，与之前相同。 */
+    private final ConfirmPrompt confirm;
 
     public PermissionGate(PermissionPolicy policy, BufferedReader input, PrintWriter output) {
         this(policy, input, output, null);
@@ -20,10 +23,16 @@ public final class PermissionGate implements ToolPermission {
 
     public PermissionGate(PermissionPolicy policy, BufferedReader input, PrintWriter output,
                           BooleanSupplier asyncTurn) {
+        this(policy, input, output, asyncTurn, ConfirmPrompt.full());
+    }
+
+    public PermissionGate(PermissionPolicy policy, BufferedReader input, PrintWriter output,
+                          BooleanSupplier asyncTurn, ConfirmPrompt confirm) {
         this.policy = policy;
         this.input = input;
         this.output = output;
         this.asyncTurn = asyncTurn;
+        this.confirm = Objects.requireNonNull(confirm);
     }
 
     @Override
@@ -40,10 +49,7 @@ public final class PermissionGate implements ToolPermission {
                     + "需要执行时请在用户回来后请求批准。";
         }
         // 与 ChatLoop 共用同一个输入流；确认答案只由这里消费，不进入模型消息历史。
-        output.println("权限确认> " + decision.reason());
-        output.println("工具> " + call.name() + " [" + call.id() + "]");
-        output.println("参数> " + call.arguments());
-        output.print("仅允许本次调用？[y/N] ");
+        confirm.ask(output, decision.reason(), call, "仅允许本次调用？");
         output.flush();
         String answer = input.readLine();
         if (answer == null) {

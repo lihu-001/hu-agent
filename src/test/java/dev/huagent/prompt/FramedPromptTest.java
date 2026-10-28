@@ -66,11 +66,14 @@ class FramedPromptTest {
         // 还没有用量：只显示最大值。中文按两列计，前缀共 34 列，补 25 个 ─ 到 59 列。
         assertEquals("── glm-4.6 ── 上下文最大 1M token " + "─".repeat(25), prompt.rule());
         prompt.context(1766);
-        assertEquals("── glm-4.6 ── 上下文剩余 998.2K / 最大 1M token " + "─".repeat(11), prompt.rule());
+        assertEquals("── glm-4.6 ── 上下文剩余 998.2K（99%）/ 最大 1M token " + "─".repeat(5), prompt.rule());
         assertEquals(59, FramedPrompt.displayWidth(prompt.rule()));
+        // 百分比向下取整：只有完全没用时才是 100%。
+        prompt.context(0);
+        assertTrue(prompt.rule().contains("上下文剩余 1M（100%）/ 最大 1M token"), prompt.rule());
         // 配置的最大值比实际用量小时剩余显示为 0。
         prompt.context(2_000_000);
-        assertTrue(prompt.rule().contains("上下文剩余 0 / 最大 1M token"), prompt.rule());
+        assertTrue(prompt.rule().contains("上下文剩余 0（0%）/ 最大 1M token"), prompt.rule());
         prompt.context(-1);
         assertTrue(prompt.rule().startsWith("── glm-4.6 ── 上下文最大 1M token "), prompt.rule());
     }
@@ -79,7 +82,7 @@ class FramedPromptTest {
     void ruleShowsOnlyWhatIsConfigured() {
         FramedPrompt contextOnly = new FramedPrompt("> ", '-', () -> 50, null, 128_000);
         contextOnly.context(28_000);
-        assertEquals("-- 上下文剩余 100K / 最大 128K token " + "-".repeat(12), contextOnly.rule());
+        assertEquals("-- 上下文剩余 100K（78%）/ 最大 128K token " + "-".repeat(6), contextOnly.rule());
         FramedPrompt modelOnly = new FramedPrompt("❯ ", '─', () -> 60, "glm-4.6", 0);
         modelOnly.context(1766);
         assertEquals("── glm-4.6 " + "─".repeat(48), modelOnly.rule());
@@ -134,8 +137,8 @@ class FramedPromptTest {
         List<String> rules = buffer.toString().lines().filter(line -> line.startsWith("──"))
                 .map(line -> line.replaceAll("─+$", "")).toList();
         // 开始时未知；第二次响应没有 usage，不沿用上一次；/reset 替换历史后回到未知。
-        assertEquals(List.of(unknown, "── m ── 上下文剩余 998.2K / 最大 1M token ", unknown,
-                "── m ── 上下文剩余 998K / 最大 1M token ", unknown), rules);
+        assertEquals(List.of(unknown, "── m ── 上下文剩余 998.2K（99%）/ 最大 1M token ", unknown,
+                "── m ── 上下文剩余 998K（99%）/ 最大 1M token ", unknown), rules);
     }
 
     @Test

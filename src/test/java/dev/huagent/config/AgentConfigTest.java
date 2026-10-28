@@ -69,11 +69,11 @@ class AgentConfigTest {
     void environmentAloneIsEnoughWhenFileIsMissing() {
         Path missing = directory.resolve("config.properties");
         Map<String, String> environment = Map.of("HU_MODEL", "env-model", "HU_API_KEY", "env-key");
-        assertTrue(AgentConfig.coveredByEnvironment(environment));
+        assertTrue(ModelConfig.coveredByEnvironment(environment));
         AgentConfig config = AgentConfig.load(missing, environment);
         assertEquals("env-model", config.model());
         assertEquals("https://api.openai.com/v1", config.baseUrl());
-        assertFalse(AgentConfig.coveredByEnvironment(Map.of("HU_MODEL", "env-model")));
+        assertFalse(ModelConfig.coveredByEnvironment(Map.of("HU_MODEL", "env-model")));
         assertThrows(IllegalArgumentException.class, () -> AgentConfig.load(missing, Map.of("HU_MODEL", "m")));
     }
 
@@ -159,12 +159,55 @@ class AgentConfigTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"openai.model", "openai.api-key", "openai.base-url"})
+    @ValueSource(strings = {"openai.model", "openai.api-key"})
     void rejectsBlankValuesAndNamesTheKey(String key) throws IOException {
         Path file = write("openai.model=test-model\nopenai.api-key=test-secret\n" + key + "=   \n");
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> AgentConfig.load(file));
         assertTrue(error.getMessage().contains(key));
         assertFalse(error.getMessage().contains("test-secret"));
+    }
+
+    @Test
+    void blankLegacyBaseUrlFallsBackToOpenAi() throws IOException {
+        AgentConfig config = AgentConfig.load(write("openai.base-url=  \nopenai.model=m\nopenai.api-key=k\n"));
+        assertEquals(ModelProvider.OPENAI, config.modelConfig().provider());
+        assertEquals("https://api.openai.com/v1", config.baseUrl());
+        AgentConfig custom = AgentConfig.load(write("openai.base-url=https://llm.example/v1\nopenai.model=m\n"
+                + "openai.api-key=k\n"));
+        assertEquals(ModelProvider.OPENAI_COMPATIBLE, custom.modelConfig().provider());
+    }
+
+    @Test
+    void huReadsModelFileSeparatelyAndOtherSettingsFromConfigFile() throws IOException {
+        Path configFile = write("agent.max-model-calls=4\nopenai.model=ignored\nopenai.api-key=ignored\n");
+        Path modelFile = Files.writeString(directory.resolve("model.properties"),
+                "provider=anthropic\nmodel=claude-test\napi-key=k\nmax-context-tokens=200000\n");
+        AgentConfig config = AgentConfig.load(configFile, modelFile, Map.of());
+        assertEquals(ModelProvider.ANTHROPIC, config.modelConfig().provider());
+        assertEquals("claude-test", config.model());
+        assertEquals("https://api.anthropic.com", config.baseUrl());
+        assertEquals(200_000, config.maxContextTokens());
+        assertEquals(4, config.maxModelCalls());
+        assertEquals("claude-test", config.withWorkDirectory(Path.of("w")).withTeamEnabled(true).model());
+    }
+
+    @Test
+    void huFallsBackToLegacyModelKeysAndToleratesMissingConfigFile() throws IOException {
+        Path modelFile = directory.resolve("model.properties");
+        Path legacy = write("openai.base-url=https://old.example/v1\nopenai.model=old\nopenai.api-key=k\n");
+        assertTrue(AgentConfig.modelConfigured(legacy, modelFile, Map.of()), "旧版配置不需要重新引导");
+        AgentConfig config = AgentConfig.load(legacy, modelFile, Map.of());
+        assertEquals("old", config.model());
+        assertEquals(ModelProvider.OPENAI_COMPATIBLE, config.modelConfig().provider());
+
+        Path missing = directory.resolve("missing.properties");
+        assertFalse(AgentConfig.modelConfigured(missing, modelFile, Map.of()));
+        assertTrue(AgentConfig.modelConfigured(missing, modelFile, Map.of("HU_MODEL", "m", "HU_API_KEY", "k")));
+        Files.writeString(modelFile, "provider=openai\nmodel=new\napi-key=k\n");
+        assertTrue(AgentConfig.modelConfigured(missing, modelFile, Map.of()));
+        AgentConfig fresh = AgentConfig.load(missing, modelFile, Map.of());
+        assertEquals("new", fresh.model());
+        assertEquals(10, fresh.maxModelCalls(), "config.properties 缺失时其他设置取默认值");
     }
 
     @Test

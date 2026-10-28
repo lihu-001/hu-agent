@@ -1,5 +1,6 @@
 package dev.huagent.mcp;
 
+import dev.huagent.prompt.TerminalText;
 import dev.huagent.tool.AgentTool;
 
 import java.io.BufferedReader;
@@ -77,7 +78,7 @@ public final class McpManager implements AutoCloseable {
         for (McpConfig.Server server : configuration.servers()) {
             index++;
             say(output, "MCP> [" + index + "/" + configuration.servers().size() + "] 正在启动 " + server.name() + "："
-                    + display(command(server)));
+                    + TerminalText.visible(command(server)));
             McpClient client = new McpClient(server, line -> say(output, line));
             List<McpTool> found = new ArrayList<>();
             try {
@@ -147,20 +148,23 @@ public final class McpManager implements AutoCloseable {
         say(output, "配置> " + snapshot.project().resolve(McpConfig.DEFAULT_PATH));
         say(output, "进程工作目录> " + snapshot.project());
         for (McpConfig.Server server : configuration.servers()) {
-            StringBuilder line = new StringBuilder("  " + server.name() + "：" + display(server.command()));
-            server.args().forEach(argument -> line.append(' ').append(display(argument)));
+            StringBuilder line = new StringBuilder("  " + server.name() + "："
+                    + TerminalText.visible(server.command()));
+            server.args().forEach(argument -> line.append(' ').append(TerminalText.visible(argument)));
             line.append("（超时 ").append(server.timeout().toSeconds()).append(" 秒）");
             say(output, line.toString());
             if (!server.env().isEmpty()) {
                 // 只显示变量名，值中可能有令牌。
-                say(output, "    环境变量：" + String.join("、", server.env().keySet().stream().map(McpManager::display).toList()));
+                say(output, "    环境变量：" + String.join("、",
+                        server.env().keySet().stream().map(TerminalText::visible).toList()));
             }
             if (!server.allow().isEmpty()) {
-                say(output, "    免确认工具：" + String.join("、", server.allow().stream().map(McpManager::display).toList()));
+                say(output, "    免确认工具：" + String.join("、",
+                        server.allow().stream().map(TerminalText::visible).toList()));
             }
         }
         for (Path file : snapshot.files()) {
-            say(output, "校验文件> " + display(file.toString()));
+            say(output, "校验文件> " + TerminalText.visible(file.toString()));
         }
         say(output, "server 以当前用户权限常驻运行，可访问文件和网络；此授权不是安全审计或沙箱。");
         say(output, "只校验配置、参数中的字面量脚本和 trust_files；npx 等下载的包与动态加载的代码不自动跟踪。");
@@ -250,7 +254,8 @@ public final class McpManager implements AutoCloseable {
         if (tail.isEmpty()) {
             return "";
         }
-        return "\n  stderr> " + display(tail.length() > 500 ? "…" + tail.substring(tail.length() - 500) : tail);
+        return "\n  stderr> "
+                + TerminalText.visible(tail.length() > 500 ? "…" + tail.substring(tail.length() - 500) : tail);
     }
 
     private static void say(PrintWriter output, String text) {
@@ -258,17 +263,5 @@ public final class McpManager implements AutoCloseable {
             output.println(text);
             output.flush();
         }
-    }
-
-    private static String display(String text) {
-        StringBuilder result = new StringBuilder();
-        text.codePoints().forEach(code -> {
-            if (Character.isISOControl(code) || Character.getType(code) == Character.FORMAT) {
-                result.append(String.format("\\u%04x", code));
-            } else {
-                result.appendCodePoint(code);
-            }
-        });
-        return result.toString();
     }
 }
