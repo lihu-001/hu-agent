@@ -16,8 +16,9 @@ public record AgentConfig(String baseUrl, String apiKey, String model, Path work
                           int maxModelCalls, Duration shellTimeout, int maxOutputChars,
                           int compactThresholdChars, int compactKeepToolResults, Duration backgroundTimeout,
                           int schedulerPollSeconds, boolean teamEnabled, int goalBlockCap,
-                          String goalEvaluatorModel) {
+                          String goalEvaluatorModel, int maxContextTokens) {
     public static final int DEFAULT_COMPACT_THRESHOLD_CHARS = 50000;
+    public static final int DEFAULT_MAX_CONTEXT_TOKENS = 1_000_000;
     public static final int DEFAULT_COMPACT_KEEP_TOOL_RESULTS = 3;
     public static final int DEFAULT_BACKGROUND_TIMEOUT_SECONDS = 600;
     public static final int DEFAULT_SCHEDULER_POLL_SECONDS = 15;
@@ -33,7 +34,20 @@ public record AgentConfig(String baseUrl, String apiKey, String model, Path work
         if (goalBlockCap <= 0) {
             throw new IllegalArgumentException("goal.block-cap 必须为正整数");
         }
+        if (maxContextTokens <= 0) {
+            throw new IllegalArgumentException("openai.max-context-tokens 必须为正整数");
+        }
         goalEvaluatorModel = StrUtil.isBlank(goalEvaluatorModel) ? null : goalEvaluatorModel.strip();
+    }
+
+    /** S17—S18 的字段；模型最大上下文取默认值。 */
+    public AgentConfig(String baseUrl, String apiKey, String model, Path workDirectory,
+                       int maxModelCalls, Duration shellTimeout, int maxOutputChars,
+                       int compactThresholdChars, int compactKeepToolResults, Duration backgroundTimeout,
+                       int schedulerPollSeconds, boolean teamEnabled, int goalBlockCap, String goalEvaluatorModel) {
+        this(baseUrl, apiKey, model, workDirectory, maxModelCalls, shellTimeout, maxOutputChars,
+                compactThresholdChars, compactKeepToolResults, backgroundTimeout, schedulerPollSeconds, teamEnabled,
+                goalBlockCap, goalEvaluatorModel, DEFAULT_MAX_CONTEXT_TOKENS);
     }
 
     /** S13—S16 的字段；目标续跑上限取默认值，判断器使用主模型。 */
@@ -128,7 +142,8 @@ public record AgentConfig(String baseUrl, String apiKey, String model, Path work
                 positiveInt(properties, "scheduler.poll-seconds", DEFAULT_SCHEDULER_POLL_SECONDS),
                 bool(properties, "team.enabled", false),
                 positiveInt(properties, "goal.block-cap", DEFAULT_GOAL_BLOCK_CAP),
-                properties.getProperty("goal.evaluator-model"));
+                properties.getProperty("goal.evaluator-model"),
+                positiveInt(properties, "openai.max-context-tokens", DEFAULT_MAX_CONTEXT_TOKENS));
     }
 
     /** 不需要配置文件也能启动的条件：环境变量给出了模型与 api-key（接口地址有默认值）。 */
@@ -145,14 +160,14 @@ public record AgentConfig(String baseUrl, String apiKey, String model, Path work
     public AgentConfig withWorkDirectory(Path directory) {
         return new AgentConfig(baseUrl, apiKey, model, directory, maxModelCalls, shellTimeout, maxOutputChars,
                 compactThresholdChars, compactKeepToolResults, backgroundTimeout, schedulerPollSeconds, teamEnabled,
-                goalBlockCap, goalEvaluatorModel);
+                goalBlockCap, goalEvaluatorModel, maxContextTokens);
     }
 
     /** S13：打开或关闭团队模式，其他设置不变。 */
     public AgentConfig withTeamEnabled(boolean enabled) {
         return new AgentConfig(baseUrl, apiKey, model, workDirectory, maxModelCalls, shellTimeout, maxOutputChars,
                 compactThresholdChars, compactKeepToolResults, backgroundTimeout, schedulerPollSeconds, enabled,
-                goalBlockCap, goalEvaluatorModel);
+                goalBlockCap, goalEvaluatorModel, maxContextTokens);
     }
 
     /** 只接受 true / false（不区分大小写），拼错时报错而不是悄悄关闭。 */

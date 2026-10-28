@@ -1,6 +1,7 @@
 package dev.huagent;
 
 import dev.huagent.app.TeamMain;
+import dev.huagent.command.CommandRegistry;
 import dev.huagent.command.CommandStarter;
 import dev.huagent.config.AgentConfig;
 import dev.huagent.config.ConfigSetup;
@@ -18,7 +19,10 @@ import dev.huagent.mcp.McpTrustStore;
 import dev.huagent.model.ModelClient;
 import dev.huagent.model.OpenAiClient;
 import dev.huagent.prompt.FramedPrompt;
+import dev.huagent.prompt.LineEditor;
 import dev.huagent.prompt.PromptStyle;
+import dev.huagent.prompt.Splash;
+import dev.huagent.prompt.TerminalTitle;
 import dev.huagent.prompt.TerminalWidth;
 import dev.huagent.team.TeamManager;
 import dev.huagent.todo.TodoList;
@@ -37,6 +41,8 @@ import java.time.Duration;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntSupplier;
 
 /**
  * hu 命令入口：在当前目录启动交互会话，装配与 java-agent 教程 S18 的 CommandMain 相同（全部机制加斜杠命令）。
@@ -62,6 +68,7 @@ public final class HuMain {
         }
         BufferedReader input = new BufferedReader(console == null
                 ? new InputStreamReader(System.in, StandardCharsets.UTF_8) : console.reader());
+        LineEditor editor = null;
         boolean failed = false;
         try {
             Path configFile = HuHome.configFile();
@@ -72,7 +79,30 @@ public final class HuMain {
                 output.println("hu> 未完成配置，已退出。");
                 return;
             }
-            run(AgentConfig.load(configFile, environment), input, output, debug, promptStyle(console));
+            AgentConfig config = AgentConfig.load(configFile, environment);
+            // 首次配置引导用 Console 读取（API Key 不回显）；之后由行编辑器接管终端，Console 不再读写。
+            AtomicReference<CommandRegistry> registry = new AtomicReference<>();
+            editor = console == null ? null : LineEditor.open(() -> {
+                CommandRegistry bound = registry.get();
+                return bound == null ? List.of() : bound.commands();
+            });
+            // 终端标题跟着会话状态变化，只在行编辑器接管终端时设置（见 TerminalTitle）。
+            TerminalTitle title = editor == null ? null : new TerminalTitle(editor::title, config.workDirectory());
+            if (editor != null) {
+                output.flush();
+                output = editor.output();
+                input = title.input(editor.input());
+            }
+            IntSupplier columns = editor == null ? TerminalWidth.system() : editor::columns;
+            PromptStyle prompt = promptStyle(console, config, columns);
+            // 补全要用会话装配出的注册表（含技能命令）。
+            CommandStarter commands = (sources, warnings) -> {
+                CommandRegistry bound = CommandStarter.builtin().bind(sources, warnings);
+                registry.set(bound);
+                return bound;
+            };
+            run(config, input, output, debug, title == null ? prompt : title.prompt(prompt),
+                    splash(console, columns), commands, editor != null);
         } catch (IllegalArgumentException e) {
             failed = true;
             output.println("配置错误：" + e.getMessage());
@@ -82,6 +112,9 @@ public final class HuMain {
                     + e.getClass().getSimpleName() + "），对话结束。");
         } finally {
             output.flush();
+            if (editor != null) {
+                editor.close();
+            }
         }
         if (failed) {
             System.exit(1);
@@ -89,7 +122,13 @@ public final class HuMain {
     }
 
     private static void run(AgentConfig config, BufferedReader input, PrintWriter output, boolean debug,
-                            PromptStyle prompt) throws IOException {
+                            PromptStyle prompt, String splash, CommandStarter commands, boolean completion)
+            throws IOException {
+        // 启动页先于会话装配输出：MCP server 启动可能较慢，Hook 与 MCP 的授权确认也排在它下面。
+        if (splash != null) {
+            output.print(splash);
+            output.flush();
+        }
         ModelClient client = new OpenAiClient(config.baseUrl(), config.apiKey(), config.model(), Duration.ofSeconds(60));
         // 判断器可以单独配置一个更便宜的模型；未配置时与主 Agent 共用客户端。
         ModelClient evaluator = config.goalEvaluatorModel() == null ? client
@@ -106,22 +145,29 @@ public final class HuMain {
                 projectDirectory, List.of(), HookTrustStore.userStore(), new TodoList(),
                 ZoneId.systemDefault(), Clock.systemDefaultZone(), true, TeamManager.DEFAULT_IDLE_SCAN,
                 McpManager.Starter.of(projectDirectory, McpTrustStore.userStore(), System.getenv()),
-                options, WorkflowStarter.of(config), GoalStarter.of(evaluator, config.goalBlockCap()),
-                CommandStarter.builtin());
+                options, WorkflowStarter.of(config), GoalStarter.of(evaluator, config.goalBlockCap()), commands);
         List<String> servers = session.mcp().servers();
-        output.println("hu-agent " + HuVersion.current() + " · 模型 " + config.model() + " · 工作目录 "
-                + config.workDirectory().toAbsolutePath().normalize());
-        output.println("输入 /help 查看命令，exit 退出。"
+        String location = "模型 " + config.model() + " · 工作目录 " + config.workDirectory().toAbsolutePath().normalize();
+        output.println(splash == null ? "hu-agent " + HuVersion.current() + " · " + location : location);
+        output.println((completion ? "输入 / 列出命令，Tab 或 ↑↓ 选择" : "输入 /help 查看命令") + "，exit 退出。"
                 + (servers.isEmpty() ? "" : "MCP 已连接：" + String.join("、", servers) + "。")
                 + (session.teamEnabled() ? "团队模式已开启。" : "")
                 + (debug ? "调试模式已开启。" : ""));
         session.run();
     }
 
-    /** 交互终端上用分隔线框出输入位置；输入输出被重定向（没有 Console）时保留 "你> "，日志里不出现分隔线。 */
-    static PromptStyle promptStyle(Console console) {
+    /**
+     * 交互终端上在输入上方画分隔线标出用户输入，线上显示模型与上下文用量（最大值取 openai.max-context-tokens）；
+     * 输入输出被重定向（没有 Console）时保留 "你> "，日志里不出现分隔线。
+     */
+    static PromptStyle promptStyle(Console console, AgentConfig config, IntSupplier columns) {
         return console == null ? PromptStyle.plain()
-                : FramedPrompt.forTerminal(console.charset(), TerminalWidth.system());
+                : FramedPrompt.forTerminal(console.charset(), columns, config.model(), config.maxContextTokens());
+    }
+
+    /** 交互终端上显示启动页（像素字、版本与一条随机提示）；没有 Console 时返回 null，只打印一行版本信息。 */
+    static String splash(Console console, IntSupplier columns) {
+        return console == null ? null : Splash.forTerminal(console.charset(), columns.getAsInt(), HuVersion.current());
     }
 
     /** 只有 -d / --debug 一个参数时以调试模式启动会话；其他参数交给 options。 */
@@ -154,9 +200,10 @@ public final class HuMain {
         return """
                 用法：hu [选项]
                   在当前目录启动 hu-agent 交互会话；进入后输入 /help 查看命令，exit 退出。
-                      hu update [--local]
+                      hu update [--local | --pkg <安装包>]
                   更新到最新发布版（等同重新运行安装命令）；--local 在 hu-agent 源码目录中
-                  构建并安装当前源码（需要 JDK 17）。配置、授权记录和 Java 运行时都会保留。
+                  构建并安装当前源码（需要 JDK 25）；--pkg 安装本地的 hu-agent.zip / hu-agent.tar.gz
+                  或其所在目录，不联网。配置、授权记录和 Java 运行时都会保留。
 
                 选项：
                   -d, --debug      调试模式：显示每次模型请求与耗时、内置 Hook 日志、微压缩、

@@ -60,6 +60,8 @@ public final class ChatLoop {
     private final boolean debug;
     /** 等待输入时的提示符样式；hu 用 FramedPrompt，其余构造器为 "你> "。 */
     private final PromptStyle prompt;
+    /** 最近一次主对话请求之后的上下文 token 数，-1 表示未知；只用于提示符显示。 */
+    private int contextTokens = -1;
 
     public ChatLoop(ModelClient client) {
         this(client, new ShellTool(Path.of("playground"), Duration.ofSeconds(30), 12000), 10);
@@ -195,6 +197,7 @@ public final class ChatLoop {
             }
         }
         while (true) {
+            prompt.context(contextTokens);
             prompt.begin(output);
             output.flush();
             String line = input.readLine();
@@ -228,9 +231,10 @@ public final class ChatLoop {
                     output.flush();
                     return;
                 }
-                // /clear 与 /compact 替换了历史：此后的轮次从新历史开始。
+                // /clear 与 /compact 替换了历史：此后的轮次从新历史开始，上一次请求的 token 用量不再适用。
                 if (context.historyReplaced()) {
                     history = new ArrayList<>(context.history());
+                    contextTokens = -1;
                 }
                 if (result != null && result.kind() == CommandResult.Kind.EXIT) {
                     output.println("对话已结束。");
@@ -442,7 +446,10 @@ public final class ChatLoop {
         boolean reactiveCompacted = false;
         while (true) {
             try {
-                return new Recovery(client.complete(List.copyOf(sent), definitions), request, sent, false);
+                // 响应不带 usage 时用量记为未知，不沿用上一次请求的数字。
+                contextTokens = -1;
+                return new Recovery(client.complete(List.copyOf(sent), definitions, tokens -> contextTokens = tokens),
+                        request, sent, false);
             } catch (ModelUnavailableException e) {
                 attempt++;
                 if (retryPolicy == null || attempt > retryPolicy.maxRetries()) {

@@ -7,8 +7,7 @@
         <format>zip</format>
         <format>tar.gz</format>
     </formats>
-    <!-- 包内顶层目录固定为 hu-agent/，安装脚本整体移动到 HU_HOME/app。 -->
-    <includeBaseDirectory>true</includeBaseDirectory>
+    <!-- 包内顶层目录固定为 hu-agent/，安装脚本整体移动到 HU_HOME/app。 -->    <includeBaseDirectory>true</includeBaseDirectory>
     <baseDirectory>hu-agent</baseDirectory>
     <fileSets>
         <fileSet>
@@ -38,6 +37,18 @@
         <file>
             <source>src/main/resources/hu-agent/config.example.properties</source>
             <outputDirectory/>
+        </file>
+        <!-- 安装脚本随包安装到 app/，供 hu update 的 pkg 选项离线使用。 -->
+        <file>
+            <source>install.sh</source>
+            <outputDirectory/>
+            <fileMode>0755</fileMode>
+            <lineEnding>unix</lineEnding>
+        </file>
+        <file>
+            <source>install.ps1</source>
+            <outputDirectory/>
+            <lineEnding>dos</lineEnding>
         </file>
         <file>
             <source>${project.build.outputDirectory}/hu-agent/version.properties</source>

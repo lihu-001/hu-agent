@@ -18,6 +18,13 @@ public interface PromptStyle {
     default void end(PrintWriter output, String line) {
     }
 
+    /**
+     * ChatLoop 每次等待输入前、begin 之前调用：usedTokens 是主对话最近一次模型请求之后占用的上下文 token 数；
+     * 会话刚开始、/clear 或 /compact 替换历史之后、接口不返回 usage 时为 -1（未知）。默认什么都不做。
+     */
+    default void context(int usedTokens) {
+    }
+
     /** 教程入口与测试使用的原样式。 */
     static PromptStyle plain() {
         return output -> output.print("你> ");

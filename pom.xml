@@ -8,7 +8,7 @@
     <name>hu-agent</name>
     <properties>
         <revision>0.1.0</revision>
-        <maven.compiler.release>17</maven.compiler.release>
+        <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <main.class>dev.huagent.HuMain</main.class>
@@ -29,6 +29,17 @@
             <groupId>com.alibaba.fastjson2</groupId>
             <artifactId>fastjson2</artifactId>
             <version>2.0.66</version>
+        </dependency>
+        <!-- 交互会话的行编辑与斜杠命令补全；终端访问走 FFM（JDK 22+），不加载 JNI 原生库。 -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-reader</artifactId>
+            <version>4.4.8</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal-ffm</artifactId>
+            <version>4.4.8</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -64,15 +75,15 @@
                 <version>3.5.0</version>
                 <executions>
                     <execution>
-                        <id>require-jdk-17</id>
+                        <id>require-jdk-25</id>
                         <goals>
                             <goal>enforce</goal>
                         </goals>
                         <configuration>
                             <rules>
                                 <requireJavaVersion>
-                                    <version>[17,)</version>
-                                    <message>需要 JDK 17 或更高版本运行 Maven。请把 JAVA_HOME 指向 JDK 17（当前 Java：${java.version}，${java.home}）。</message>
+                                    <version>[25,)</version>
+                                    <message>需要 JDK 25 或更高版本运行 Maven。请把 JAVA_HOME 指向 JDK 25（当前 Java：${java.version}，${java.home}）。</message>
                                 </requireJavaVersion>
                             </rules>
                         </configuration>
@@ -128,6 +139,8 @@
                                     <mainClass>${main.class}</mainClass>
                                     <manifestEntries>
                                         <Multi-Release>true</Multi-Release>
+                                        <!-- JLine 经 FFM 调用系统终端接口；不声明时 JDK 每次启动都打印受限方法警告。 -->
+                                        <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
                                         <Implementation-Version>${project.version}</Implementation-Version>
                                     </manifestEntries>
                                 </transformer>

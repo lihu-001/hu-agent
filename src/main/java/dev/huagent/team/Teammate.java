@@ -99,6 +99,7 @@ public final class Teammate implements Runnable {
     public void run() {
         String exit = null;
         boolean requested = false;
+        String answered = null;
         try {
             while (!stopping && !Thread.currentThread().isInterrupted()) {
                 List<TeamMessage> mail = bus.drain(name);
@@ -108,6 +109,7 @@ public final class Teammate implements Runnable {
                 if (shutdown != null) {
                     // 关闭请求在一轮结束后才处理：正在进行的模型请求和工具调用会先做完。
                     requested = true;
+                    answered = shutdown.requestId();
                     say("收到关闭请求 " + shutdown.requestId() + "，退出。");
                     bus.send(new TeamMessage(name, TeamManager.LEAD, TeamMessage.SHUTDOWN_RESPONSE,
                             "已停止。", shutdown.requestId(), null));
@@ -153,7 +155,7 @@ public final class Teammate implements Runnable {
                     + (e.getMessage() == null ? "" : "：" + e.getMessage()) + "）";
         } finally {
             status = Status.STOPPED;
-            finish(exit, requested);
+            finish(exit, requested, answered);
         }
     }
 
@@ -162,7 +164,7 @@ public final class Teammate implements Runnable {
         return agent.history();
     }
 
-    private void finish(String exit, boolean requested) {
+    private void finish(String exit, boolean requested, String answered) {
         // 退回任务要获取 FileChannel 文件锁，而 FileChannel 遇到中断标记会直接关闭；先清除标记，结束时再恢复。
         boolean interrupted = Thread.interrupted();
         try {
@@ -173,7 +175,7 @@ public final class Teammate implements Runnable {
         } catch (IOException | RuntimeException e) {
             say("退出时无法退回任务（" + e.getClass().getSimpleName() + "）。");
         }
-        team.removed(this);
+        team.removed(this, answered);
         if (!requested && !stopping) {
             try {
                 bus.send(new TeamMessage(name, TeamManager.LEAD, TeamMessage.STOPPED,

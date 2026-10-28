@@ -10,8 +10,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 终端当前列数。Java 17 取不到控制台窗口大小，按顺序尝试：COLUMNS 环境变量；Windows 上 mode con；
- * 其他系统上 stty size。每次调用都重新探测，窗口缩放后分隔线跟着变；探测失败一次后不再启动进程，固定返回默认值。
+ * 终端当前列数，用于没有行编辑器（LineEditor）时。Java 标准库取不到控制台窗口大小，按顺序尝试：
+ * COLUMNS 环境变量；Windows 上 mode con；其他系统上 stty size。每次调用都重新探测，窗口缩放后分隔线跟着变；
+ * 探测失败一次后不再启动进程，固定返回默认值。
  */
 public final class TerminalWidth implements IntSupplier {
     public static final int DEFAULT = 80;

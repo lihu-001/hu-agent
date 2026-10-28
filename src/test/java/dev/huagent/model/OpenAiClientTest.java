@@ -79,6 +79,31 @@ class OpenAiClientTest {
     }
 
     @Test
+    void reportsContextTokensFromUsage() throws Exception {
+        response = """
+                {"choices":[{"message":{"role":"assistant","content":"好"}}],
+                 "usage":{"prompt_tokens":1200,"completion_tokens":80,"total_tokens":1280}}
+                """;
+        List<Integer> reported = new java.util.ArrayList<>();
+        ChatMessage answer = client(baseUrl, Duration.ofSeconds(5)).complete(List.of(new ChatMessage("user", "你好")),
+                List.of(), reported::add);
+        assertEquals("好", answer.content());
+        assertEquals(List.of(1280), reported);
+    }
+
+    @Test
+    void contextTokensExcludeReasoningAndToleratesMissingUsage() {
+        assertEquals(1250, OpenAiClient.contextTokens("""
+                {"usage":{"prompt_tokens":1200,"completion_tokens":530,
+                 "completion_tokens_details":{"reasoning_tokens":480}}}
+                """));
+        assertEquals(1200, OpenAiClient.contextTokens("{\"usage\":{\"prompt_tokens\":1200}}"));
+        assertEquals(-1, OpenAiClient.contextTokens("{\"choices\":[]}"));
+        assertEquals(-1, OpenAiClient.contextTokens("{\"usage\":{\"prompt_tokens\":\"many\"}}"));
+        assertEquals(-1, OpenAiClient.contextTokens("{\"usage\":null}"));
+    }
+
+    @Test
     void parsesMultipleToolCallsWithNullContentAndSerializesProtocolFields() throws Exception {
         response = """
                 {"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,

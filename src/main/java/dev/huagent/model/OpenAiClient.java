@@ -20,6 +20,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.IntConsumer;
 
 public final class OpenAiClient implements ModelClient {
     private final HttpClient httpClient;
@@ -56,6 +57,13 @@ public final class OpenAiClient implements ModelClient {
     @Override
     public ChatMessage complete(List<ChatMessage> messages, List<ToolDefinition> tools)
             throws IOException, InterruptedException {
+        return complete(messages, tools, tokens -> {
+        });
+    }
+
+    @Override
+    public ChatMessage complete(List<ChatMessage> messages, List<ToolDefinition> tools, IntConsumer contextTokens)
+            throws IOException, InterruptedException {
         JSONObject body = new JSONObject();
         body.put("model", model);
         body.put("messages", messages.stream().map(this::serializeMessage).toList());
@@ -84,7 +92,32 @@ public final class OpenAiClient implements ModelClient {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw failure(response);
         }
-        return parseAnswer(response.body());
+        ChatMessage answer = parseAnswer(response.body());
+        int tokens = contextTokens(response.body());
+        if (tokens >= 0) {
+            contextTokens.accept(tokens);
+        }
+        return answer;
+    }
+
+    /**
+     * 回答进入历史后对话占用的 token：输入加输出，减去不进入历史的推理 token。
+     * usage 是可选字段，缺失或格式不对时返回 -1，不影响回答本身。
+     */
+    static int contextTokens(String body) {
+        try {
+            JSONObject usage = JSON.parseObject(body).getJSONObject("usage");
+            Integer prompt = usage == null ? null : usage.getInteger("prompt_tokens");
+            if (prompt == null || prompt < 0) {
+                return -1;
+            }
+            int completion = Math.max(0, usage.getIntValue("completion_tokens"));
+            JSONObject details = usage.getJSONObject("completion_tokens_details");
+            int reasoning = details == null ? 0 : Math.max(0, details.getIntValue("reasoning_tokens"));
+            return (int) Math.min(Integer.MAX_VALUE, (long) prompt + Math.max(0, completion - reasoning));
+        } catch (RuntimeException e) {
+            return -1;
+        }
     }
 
     /** S15：把可恢复的失败分成限流与上下文超长两类，其余保持通用失败。正文可能含敏感信息，不进入异常消息。 */

@@ -6,7 +6,10 @@
 #   %USERPROFILE%\.hu-agent\runtime\   private Java runtime (pinned Temurin JRE, downloaded again only when the pin changes)
 #
 # Optional environment variables (same meaning as in install.sh):
-#   HU_VERSION, HU_HOME, HU_DOWNLOAD_BASE, HU_JRE_BASE, HU_NO_MODIFY_PATH
+#   HU_VERSION, HU_HOME, HU_DOWNLOAD_BASE, HU_JRE_BASE, HU_NO_MODIFY_PATH, HU_PACKAGE
+#
+# This script is also shipped in the package as app\install.ps1; "hu update --pkg" and "hu update --local"
+# run it with HU_PACKAGE set to a local hu-agent.zip (or a directory holding one).
 #
 # Keep this file ASCII-only: Windows PowerShell 5.1 reads BOM-less scripts in the ANSI code page,
 # and a BOM breaks "irm | iex".
@@ -19,10 +22,10 @@
 
     $Repo = 'lihu-001/hu-agent'
     # Pinned Java runtime. When bumping it, update the file name and sha256 (package.checksum from the Adoptium API).
-    # Temurin 17 has no Windows ARM64 build; ARM64 devices run the x64 runtime under emulation.
-    $JreRelease = 'jdk-17.0.20.1+1'
-    $JreFile = 'OpenJDK17U-jre_x64_windows_hotspot_17.0.20.1_1.zip'
-    $JreSha256 = 'bc21a93923103cdaac93ee337b0ae4365e739fde36df823dd456bc67c8a9d352'
+    # Temurin publishes no Windows ARM64 JRE; ARM64 devices run the x64 runtime under emulation.
+    $JreRelease = 'jdk-25.0.5+8'
+    $JreFile = 'OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip'
+    $JreSha256 = 'da78d54a2fcdbba1e92d5e3f07dd30236f96297891c4a21a781c3f38f5c0beae'
 
     function Say([string] $Text) {
         Write-Host "hu-agent> $Text"
@@ -86,7 +89,7 @@
                elseif ($version -eq 'latest') { "https://github.com/$Repo/releases/latest/download" }
                else { "https://github.com/$Repo/releases/download/$version" }
     $jreBase = if ($env:HU_JRE_BASE) { $env:HU_JRE_BASE.TrimEnd('/') }
-               else { "https://github.com/adoptium/temurin17-binaries/releases/download/$($JreRelease.Replace('+', '%2B'))" }
+               else { "https://github.com/adoptium/temurin25-binaries/releases/download/$($JreRelease.Replace('+', '%2B'))" }
     $huHome = if ($env:HU_HOME) { $env:HU_HOME } else { Join-Path $env:USERPROFILE '.hu-agent' }
     New-Item -ItemType Directory -Force -Path $huHome | Out-Null
     $huHome = (Resolve-Path -LiteralPath $huHome).ProviderPath
@@ -96,11 +99,25 @@
     New-Item -ItemType Directory -Path $work | Out-Null
     try {
         # ---- Download and verify everything before touching the installed files ----
-        Say "Downloading hu-agent ($version)"
         $appZip = Join-Path $work 'hu-agent.zip'
-        Get-HuFile "$appBase/hu-agent.zip" $appZip
-        Get-HuFile "$appBase/hu-agent.zip.sha256" "$appZip.sha256"
-        Assert-HuSha256 $appZip ((Get-Content -LiteralPath "$appZip.sha256" -Raw).Trim() -split '\s+')[0]
+        if ($env:HU_PACKAGE) {
+            # A local package the user picked: nothing to download, and no published checksum to compare with.
+            $package = $env:HU_PACKAGE
+            if (Test-Path -LiteralPath $package -PathType Container) {
+                $package = Join-Path $package 'hu-agent.zip'
+            }
+            if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
+                throw "Package not found: $package"
+            }
+            $package = (Resolve-Path -LiteralPath $package).ProviderPath
+            Say "Installing hu-agent from $package"
+            Copy-Item -LiteralPath $package -Destination $appZip
+        } else {
+            Say "Downloading hu-agent ($version)"
+            Get-HuFile "$appBase/hu-agent.zip" $appZip
+            Get-HuFile "$appBase/hu-agent.zip.sha256" "$appZip.sha256"
+            Assert-HuSha256 $appZip ((Get-Content -LiteralPath "$appZip.sha256" -Raw).Trim() -split '\s+')[0]
+        }
         Expand-HuZip $appZip (Join-Path $work 'app')
         $appSource = Join-Path $work 'app\hu-agent'
         if (-not (Test-Path -LiteralPath (Join-Path $appSource 'lib\hu-agent.jar'))) {
@@ -114,7 +131,7 @@
                 -and ((Get-Content -LiteralPath $marker -Raw).Trim() -eq $JreRelease)) {
             Say "Java runtime $JreRelease is already installed"
         } else {
-            Say "Downloading Java runtime $JreRelease (about 45 MB, please wait)"
+            Say "Downloading Java runtime $JreRelease (about 60 MB, please wait)"
             $jreZip = Join-Path $work 'jre.zip'
             Get-HuFile "$jreBase/$JreFile" $jreZip
             Assert-HuSha256 $jreZip $JreSha256

@@ -1,12 +1,12 @@
 package dev.huagent.team;
 
 import dev.huagent.harness.EventHub;
+import dev.huagent.harness.InputPump;
 import dev.huagent.harness.TurnEvents;
 import dev.huagent.prompt.PromptStyle;
 import dev.huagent.tool.ToolCall;
 
 import java.io.BufferedReader;
-import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.Reader;
 import java.util.ArrayDeque;
@@ -22,7 +22,8 @@ import java.util.function.Supplier;
 
 /**
  * 主线程的事件队列：终端输入、Lead 收件箱的唤醒、队友的权限确认请求都放进同一个队列，只有主线程取出处理。
- * System.in 的阻塞读取不能被唤醒，所以由一个守护线程只负责把读到的行搬进队列，不做任何决定。
+ * System.in 的阻塞读取不能被唤醒，所以由一个守护线程只负责把读到的行搬进队列，不做任何决定；
+ * 它只在队列为空、有人等待输入时才读下一行（见 InputPump）。
  * 两个读取视图：prompts 给 Lead 的 ChatLoop（会被队友消息唤醒），answers 给确认提示（只要用户的下一行）。
  */
 public final class TeamConsole implements AutoCloseable {
@@ -51,6 +52,7 @@ public final class TeamConsole implements AutoCloseable {
     private boolean ended;
     /** 确认问答之后重画 Lead 的提示符，与 ChatLoop 使用同一样式。 */
     private final PromptStyle prompt;
+    private final InputPump pump;
 
     public TeamConsole(BufferedReader terminal, PrintWriter output) {
         this(terminal, output, PromptStyle.plain());
@@ -60,19 +62,8 @@ public final class TeamConsole implements AutoCloseable {
         Objects.requireNonNull(terminal);
         this.output = Objects.requireNonNull(output);
         this.prompt = Objects.requireNonNull(prompt);
-        Thread pump = new Thread(() -> {
-            try {
-                String line;
-                while ((line = terminal.readLine()) != null) {
-                    events.add(new Line(line));
-                }
-            } catch (IOException e) {
-                // 终端不可读按输入结束处理。
-            }
-            events.add(new End());
-        }, "terminal-input");
-        pump.setDaemon(true);
-        pump.start();
+        this.pump = new InputPump(terminal, line -> events.add(line == null ? new End() : new Line(line)),
+                "terminal-input");
     }
 
     /** Lead 的输入：用户的一行，或者没有输入时的队友消息（mail 返回 null 表示没有）。 */
@@ -146,7 +137,7 @@ public final class TeamConsole implements AutoCloseable {
                 say("团队> 收到队友消息，交给 Lead 处理。");
                 return events;
             }
-            Event event = this.events.take();
+            Event event = next();
             if (event instanceof Line line) {
                 // exit、quit 和空行原样交给 ChatLoop 判断，不附加消息。
                 String text = line.text().strip();
@@ -174,7 +165,7 @@ public final class TeamConsole implements AutoCloseable {
 
     private String nextAnswer() throws InterruptedException {
         while (!ended) {
-            Event event = events.take();
+            Event event = next();
             if (event instanceof Line line) {
                 return line.text();
             }
@@ -185,6 +176,16 @@ public final class TeamConsole implements AutoCloseable {
             }
         }
         return null;
+    }
+
+    /** 先取已排队的事件；队列为空才请求读取下一行并等待。 */
+    private Event next() throws InterruptedException {
+        Event event = events.poll();
+        if (event == null) {
+            pump.request();
+            event = events.take();
+        }
+        return event;
     }
 
     private void serve(Confirm confirm) throws InterruptedException {

@@ -15,8 +15,10 @@ done
 app_dir=$(cd "$(dirname "$self")/.." && pwd)
 hu_home=$(cd "$app_dir/.." && pwd)
 
-# hu update：重新运行安装脚本（默认装最新发布版；--local 装当前目录的源码）。
-# 安装会整体替换 app 目录，本脚本已经打开的是旧文件，继续执行不受影响。
+# hu update：重新运行安装脚本。默认从 GitHub 取安装脚本、装最新发布版；--local 构建并安装当前目录的源码；
+# --pkg 安装本地的 hu-agent.tar.gz（或其所在目录）。后两者通过 HU_PACKAGE 传入应用包，
+# --pkg 用随包安装在 app/ 下的安装脚本，不联网。
+# 安装会整体替换 app 目录，本脚本与安装脚本已经打开的是旧文件，继续执行不受影响。
 if [ "${1:-}" = update ]; then
     export HU_HOME="$hu_home"
     # 通过链接启动（~/.local/bin/hu）时，让安装脚本更新同一位置的链接。
@@ -38,16 +40,20 @@ if [ "${1:-}" = update ]; then
             echo "hu: 请在 hu-agent 源码目录中运行 hu update --local" >&2
             exit 2
         fi
+        echo "hu: 构建当前目录的源码（跳过测试）..."
         sh ./mvnw -q package -DskipTests
-        if command -v sha256sum >/dev/null 2>&1; then
-            (cd target && sha256sum hu-agent.tar.gz > hu-agent.tar.gz.sha256)
-        else
-            (cd target && shasum -a 256 hu-agent.tar.gz > hu-agent.tar.gz.sha256)
-        fi
-        HU_DOWNLOAD_BASE="file://$(pwd | sed 's/ /%20/g')/target" HU_VERSION=local sh ./install.sh
+        HU_PACKAGE="$(pwd)/target/hu-agent.tar.gz" sh ./install.sh
         exit
     fi
-    echo "hu: 用法：hu update [--local]" >&2
+    if [ $# -eq 3 ] && [ "$2" = --pkg ] && [ -n "$3" ]; then
+        if [ ! -f "$app_dir/install.sh" ]; then
+            echo "hu: 找不到 $app_dir/install.sh，请先重新运行一次安装命令" >&2
+            exit 1
+        fi
+        HU_PACKAGE=$3 sh "$app_dir/install.sh"
+        exit
+    fi
+    echo "hu: 用法：hu update [--local | --pkg <应用包>]" >&2
     exit 2
 fi
 
@@ -57,7 +63,8 @@ if [ ! -x "$java_cmd" ]; then
     exit 1
 fi
 
+# fastjson2 仍使用 sun.misc.Unsafe，JDK 24 起默认每次启动都打印警告，这里显式允许。
 # HU_JAVA_OPTS 按空白拆分，属于有意为之。
 # shellcheck disable=SC2086
 exec "$java_cmd" -Dfile.encoding=UTF-8 -Dhu.home="$hu_home" -XX:+UseSerialGC -XX:TieredStopAtLevel=1 \
-    $HU_JAVA_OPTS -jar "$app_dir/lib/hu-agent.jar" "$@"
+    --sun-misc-unsafe-memory-access=allow $HU_JAVA_OPTS -jar "$app_dir/lib/hu-agent.jar" "$@"

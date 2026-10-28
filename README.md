@@ -19,7 +19,7 @@ irm https://raw.githubusercontent.com/lihu-001/hu-agent/main/install.ps1 | iex
 不需要预先安装 Java。安装脚本会做这些事：
 
 - 下载发布包并校验 sha256；
-- 下载一份锁定版本的 Temurin JRE 17（约 45MB，sha256 写死在脚本里）；
+- 下载一份锁定版本的 Temurin JRE 25（约 60MB，sha256 写死在脚本里）；
 - 把 `hu` 加入 PATH。
 
 hu 只使用这份私有 JRE，和电脑上已装的 JDK 互不影响。
@@ -46,6 +46,8 @@ hu 只使用这份私有 JRE，和电脑上已装的 JDK 互不影响。
 
 **升级**：运行 `hu update`（等同于重新运行安装命令，也可以直接重跑安装命令）。配置、授权记录和 JRE 都会保留。升级前先退出其他正在运行的 `hu`。
 
+**离线安装应用包**：`hu update --pkg <路径>`，路径是 `hu-agent.zip`（Windows）/ `hu-agent.tar.gz`（macOS / Linux），或包含它的目录。使用随包安装的安装脚本，不联网、不构建。
+
 **安装指定版本**：先设置环境变量 `HU_VERSION=v0.1.0`，再运行安装命令。
 
 **卸载**：
@@ -62,6 +64,7 @@ hu 只使用这份私有 JRE，和电脑上已装的 JDK 互不影响。
 | `HU_DOWNLOAD_BASE` | 应用包下载地址前缀，用于镜像。目录下需要有 `hu-agent.tar.gz`、`hu-agent.zip` 及对应的 `.sha256` |
 | `HU_JRE_BASE` | JRE 下载地址前缀，用于镜像。文件名与 Adoptium 官方一致 |
 | `HU_NO_MODIFY_PATH=1` | 不修改 shell 配置文件或用户 PATH |
+| `HU_PACKAGE` | 安装本地应用包（`hu-agent.zip` / `hu-agent.tar.gz` 或其所在目录），不下载。`hu update --pkg` 和 `--local` 用的就是它 |
 
 国内访问 GitHub 慢的话，可以用 `HU_DOWNLOAD_BASE` 和 `HU_JRE_BASE` 指向自己的镜像。JRE 的 sha256 写死在脚本里，所以换了镜像也照样校验。
 
@@ -86,10 +89,12 @@ export HU_API_KEY=sk-...
 export HU_BASE_URL=https://api.openai.com/v1   # 可省略
 ```
 
-环境变量优先于配置文件。其他设置（调用上限、超时、压缩阈值、团队模式等）见 [config.example.properties](src/main/resources/hu-agent/config.example.properties)。
+环境变量优先于配置文件。其他设置（模型最大上下文、调用上限、超时、压缩阈值、团队模式等）见 [config.example.properties](src/main/resources/hu-agent/config.example.properties)。
 
 进入会话后：
 
+- 输入 `/` 会在输入行下方列出命令，继续输入即时过滤；Tab 或 ↑↓ 进入选择，回车把命令填进输入行；
+- 不以 `/` 开头时 ↑↓ 翻看本次会话的输入历史；有内容时 Ctrl+C 清空当前行，空行上 Ctrl+C 或 Ctrl+D 退出；
 - `/help`：查看全部命令；
 - `/status`、`/tools`、`/skills`、`/mcp`：查看状态；
 - `/clear`：清空对话；
@@ -98,6 +103,8 @@ export HU_BASE_URL=https://api.openai.com/v1   # 可省略
 - `exit`：退出。
 
 `hu --version` 查看版本，`hu --help` 查看用法。
+
+启动时先显示启动页：渐变色像素字 `hu`、版本和一条随机使用提示。颜色只在能解释 ANSI 转义的终端里显示（macOS / Linux 终端，Windows 上的 Windows Terminal、VS Code 终端、ConEmu），传统控制台窗口里不带颜色；设置环境变量 `NO_COLOR` 可关闭颜色。
 
 默认只显示对话、权限确认和工具调用摘要：每次工具调用占两行，一行是工具名和主要参数，下一行缩进显示结果的第一行与总行数（模型收到的仍是完整结果）。排查问题时用 `hu --debug`（或 `-d`）启动，会额外显示每次模型请求与耗时、内置 Hook 日志、微压缩、启动清单、工具调用 ID 和完整工具结果。
 
@@ -117,7 +124,7 @@ export HU_BASE_URL=https://api.openai.com/v1   # 可省略
 
 ## 开发
 
-需要 JDK 17 和 Maven。Windows 可以用 `./mvnw.cmd` 代替 `mvn`；注意让 `JAVA_HOME` 指向 JDK 17。
+需要 JDK 25 和 Maven。Windows 可以用 `./mvnw.cmd` 代替 `mvn`；注意让 `JAVA_HOME` 指向 JDK 25。
 
 ```sh
 mvn test                    # 全部测试（不需要 API Key，模型接口使用本地模拟服务）
@@ -139,8 +146,9 @@ hu update --local                    # 在源码目录执行：构建（跳过�
 | `config.ConfigSetup` | 首次运行引导，按 `config.example.properties` 模板写入配置 |
 | `config.HuVersion` | 版本号，构建时由 Maven 写入 |
 | `HookTrustStore` / `McpTrustStore` | 授权记录改存到 `HuHome` 下 |
+| `prompt.LineEditor` | 交互终端用 JLine 读输入：斜杠命令补全与输入历史；读取期间的后台、队友输出插在输入行上方。输入输出被重定向时仍按行读取 |
 
-发布包结构：`hu-agent/bin/hu`、`hu-agent/bin/hu.cmd`、`hu-agent/lib/hu-agent.jar`。启动脚本在 [src/dist/bin](src/dist/bin)，打包配置在 [src/assembly/dist.xml](src/assembly/dist.xml)。
+发布包结构：`hu-agent/bin/hu`、`hu-agent/bin/hu.cmd`、`hu-agent/lib/hu-agent.jar`，以及 `hu-agent/install.sh`、`hu-agent/install.ps1`（供 `hu update --pkg` 离线使用）。启动脚本在 [src/dist/bin](src/dist/bin)，打包配置在 [src/assembly/dist.xml](src/assembly/dist.xml)。
 
 ## 发布
 
@@ -161,5 +169,5 @@ git push origin v0.1.0
 升级锁定的 JRE 时，同时修改 `install.sh` 和 `install.ps1` 里的版本号与 sha256。sha256 可以从下面的接口取，看每个平台的 `binary.package.checksum`：
 
 ```text
-https://api.adoptium.net/v3/assets/release_name/eclipse/<版本，如 jdk-17.0.20.1%2B1>?image_type=jre
+https://api.adoptium.net/v3/assets/release_name/eclipse/<版本，如 jdk-25.0.5%2B8>?image_type=jre
 ```

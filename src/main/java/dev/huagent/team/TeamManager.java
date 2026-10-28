@@ -242,9 +242,14 @@ public final class TeamManager {
         return running.size();
     }
 
-    void removed(Teammate teammate) {
+    /**
+     * 队友退出时作废发给它的关闭请求，已回复的那个除外：响应可能还在 Lead 收件箱里，
+     * 由 leadMail 读到时配对并移除。answeredRequestId 为 null 表示没有回复任何请求。
+     */
+    void removed(Teammate teammate, String answeredRequestId) {
         members.remove(teammate.name(), teammate);
-        pendingShutdowns.values().removeIf(teammate.name()::equals);
+        pendingShutdowns.entrySet().removeIf(entry -> entry.getValue().equals(teammate.name())
+                && !entry.getKey().equals(answeredRequestId));
     }
 
     /** 消息列表渲染为一个 &lt;team-events&gt; 块，作为下一轮的用户输入；空列表返回 null。 */

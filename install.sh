@@ -14,14 +14,17 @@
 #   HU_DOWNLOAD_BASE   应用包下载地址前缀（镜像用），默认 GitHub Releases
 #   HU_JRE_BASE        Java 运行时下载地址前缀（镜像用），默认 Adoptium 的 GitHub Releases
 #   HU_NO_MODIFY_PATH  设为 1 时不修改 shell 配置文件
+#   HU_PACKAGE         安装本地的应用包（hu-agent.tar.gz 或其所在目录），不下载
+#
+# 本脚本也随应用包安装为 app/install.sh；hu update --pkg 与 hu update --local 设置 HU_PACKAGE 后运行它。
 #
 # 变量后紧跟中文时必须写成 ${var}：macOS 的 /bin/sh（bash 3.2）会把多字节字符算进变量名，配合 set -u 直接退出。
 set -eu
 
 REPO="lihu-001/hu-agent"
 # 锁定的 Java 运行时版本；升级时同时更新下面各平台的 sha256（来自 Adoptium API 的 package.checksum）。
-JRE_RELEASE="jdk-17.0.20.1+1"
-JRE_FILE_VERSION="17.0.20.1_1"
+JRE_RELEASE="jdk-25.0.5+8"
+JRE_FILE_VERSION="25.0.5_8"
 
 say() { printf 'hu-agent> %s\n' "$*"; }
 fail() {
@@ -74,11 +77,11 @@ if [ "$jre_os" = mac ] && [ "$jre_arch" = x64 ] && [ "$(sysctl -n sysctl.proc_tr
     jre_arch=aarch64
 fi
 case "$jre_os-$jre_arch" in
-    linux-x64) jre_sha256=0b2b640e3046b64c8ec504de0ab9d91bb5610182bda21fad454681ce54d45a62 ;;
-    linux-aarch64) jre_sha256=b8efcd5acc9109fe8d35bed132499643048a257b4f6042906ece37d03c839d77 ;;
-    alpine-linux-x64) jre_sha256=72423b1464907857f4e7ca854a2b8fd9f7cf6b9dd15bd3ea31ef6cf33b097aea ;;
-    mac-x64) jre_sha256=333cb81123c36568586646c73c8fa2326dab8badc43f5ea388a90fff59c9df27 ;;
-    mac-aarch64) jre_sha256=190480874ccceb358cbc840393207f77ac3e63a4c5f8129d0e23e9518b96ad05 ;;
+    linux-x64) jre_sha256=6fac98f0c8202efc3135a9e9e42aa61963ec42d1c5cbb40caf231e7b14a24ef6 ;;
+    linux-aarch64) jre_sha256=963931723891302ebb2687178532c3d793d71e2577cd058061c7efb396140a86 ;;
+    alpine-linux-x64) jre_sha256=b46e981318decb77eda728e006c7678a1ac0c56cf81ae3ad245710c2e4fa1a55 ;;
+    mac-x64) jre_sha256=806902c796c670969b7b27df73b8f0fe0924a61bd65083aa53064115e49cab2d ;;
+    mac-aarch64) jre_sha256=72ebd76b502c849e88dea39afae51baf5f82f2b5b1b6389c28ea707b20451bce ;;
     *) fail "没有适用于 $jre_os/$jre_arch 的 Java 运行时" ;;
 esac
 
@@ -90,7 +93,7 @@ else
     app_base="https://github.com/$REPO/releases/download/$version"
 fi
 app_base=${HU_DOWNLOAD_BASE:-$app_base}
-jre_base=${HU_JRE_BASE:-https://github.com/adoptium/temurin17-binaries/releases/download/$(printf '%s' "$JRE_RELEASE" | sed 's/+/%2B/')}
+jre_base=${HU_JRE_BASE:-https://github.com/adoptium/temurin25-binaries/releases/download/$(printf '%s' "$JRE_RELEASE" | sed 's/+/%2B/')}
 hu_home=${HU_HOME:-$HOME/.hu-agent}
 bin_dir=${HU_BIN_DIR:-$HOME/.local/bin}
 mkdir -p "$hu_home" "$bin_dir"
@@ -103,10 +106,21 @@ trap 'rm -rf "$work"' EXIT
 trap 'exit 1' INT TERM
 
 # ---- 下载并校验（全部成功后才替换已安装的文件）----
-say "下载 hu-agent（${version}）"
-download "$app_base/hu-agent.tar.gz" "$work/hu-agent.tar.gz"
-download "$app_base/hu-agent.tar.gz.sha256" "$work/hu-agent.tar.gz.sha256"
-verify "$work/hu-agent.tar.gz" "$(cut -d ' ' -f 1 < "$work/hu-agent.tar.gz.sha256")"
+if [ -n "${HU_PACKAGE:-}" ]; then
+    # 用户指定的本地应用包：不下载，也没有发布的校验值可比对。
+    package=$HU_PACKAGE
+    if [ -d "$package" ]; then
+        package="$package/hu-agent.tar.gz"
+    fi
+    [ -f "$package" ] || fail "找不到应用包：${package}"
+    say "从本地安装 hu-agent：${package}"
+    cp "$package" "$work/hu-agent.tar.gz"
+else
+    say "下载 hu-agent（${version}）"
+    download "$app_base/hu-agent.tar.gz" "$work/hu-agent.tar.gz"
+    download "$app_base/hu-agent.tar.gz.sha256" "$work/hu-agent.tar.gz.sha256"
+    verify "$work/hu-agent.tar.gz" "$(cut -d ' ' -f 1 < "$work/hu-agent.tar.gz.sha256")"
+fi
 mkdir "$work/app"
 tar -xzf "$work/hu-agent.tar.gz" -C "$work/app"
 [ -f "$work/app/hu-agent/lib/hu-agent.jar" ] || fail "应用包内容不完整"
@@ -116,8 +130,8 @@ jre_home=
 if [ -x "$runtime/bin/java" ] && [ "$(cat "$runtime/.hu-runtime" 2>/dev/null || true)" = "$JRE_RELEASE" ]; then
     say "Java 运行时已是 ${JRE_RELEASE}，跳过下载"
 else
-    jre_file="OpenJDK17U-jre_${jre_arch}_${jre_os}_hotspot_${JRE_FILE_VERSION}.tar.gz"
-    say "下载 Java 运行时 ${JRE_RELEASE}（$jre_os/${jre_arch}，约 45MB）"
+    jre_file="OpenJDK25U-jre_${jre_arch}_${jre_os}_hotspot_${JRE_FILE_VERSION}.tar.gz"
+    say "下载 Java 运行时 ${JRE_RELEASE}（$jre_os/${jre_arch}，约 60MB）"
     download "$jre_base/$jre_file" "$work/jre.tar.gz"
     verify "$work/jre.tar.gz" "$jre_sha256"
     mkdir "$work/jre"

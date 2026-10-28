@@ -65,6 +65,11 @@ public final class ContextCompactor {
         return thresholdChars;
     }
 
+    /** 与阈值比较的同一口径：微压缩之后、不含系统提示词的粗略字符数；/context 用它显示用量。 */
+    public int contextSize(List<ChatMessage> history) {
+        return conversationSize(MicroCompact.apply(history, keepRecentToolResults));
+    }
+
     /** compact 工具只登记请求，等本批工具结果都补齐后再总结，避免打断 tool_call 协议。 */
     public synchronized void requestCompaction(String focus) {
         pending = true;

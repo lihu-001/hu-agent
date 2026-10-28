@@ -40,6 +40,18 @@ class AgentConfigTest {
         assertEquals(3, config.compactKeepToolResults());
         assertEquals(600, config.backgroundTimeout().toSeconds());
         assertEquals(15, config.schedulerPollSeconds());
+        assertEquals(1_000_000, config.maxContextTokens());
+    }
+
+    @Test
+    void readsMaxContextTokensAndRejectsNonPositive() throws IOException {
+        AgentConfig config = AgentConfig.load(write(
+                "openai.model=t\nopenai.api-key=t\nopenai.max-context-tokens=128000\n"));
+        assertEquals(128_000, config.maxContextTokens());
+        assertEquals(128_000, config.withTeamEnabled(true).withWorkDirectory(Path.of("w")).maxContextTokens());
+        Path bad = write("openai.model=t\nopenai.api-key=t\nopenai.max-context-tokens=0\n");
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> AgentConfig.load(bad))
+                .getMessage().contains("openai.max-context-tokens"));
     }
 
     @Test

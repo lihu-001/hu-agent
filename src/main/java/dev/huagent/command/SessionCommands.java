@@ -93,8 +93,7 @@ final class SessionCommands {
         return SlashCommand.local("context", "查看上下文用量：消息数、粗略字符数与自动压缩阈值", (argument, context) -> {
             List<ChatMessage> history = context.history();
             List<ChatMessage> conversation = history.subList(1, history.size());
-            List<ChatMessage> micro = MicroCompact.apply(history, sources.config().compactKeepToolResults());
-            int sent = MicroCompact.size(micro.subList(1, micro.size()));
+            int sent = sources.compactor().contextSize(history);
             int threshold = sources.compactor().thresholdChars();
             long toolChars = 0;
             for (ToolDefinition tool : context.tools()) {
