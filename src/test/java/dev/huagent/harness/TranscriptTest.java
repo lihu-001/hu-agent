@@ -83,6 +83,20 @@ class TranscriptTest {
     }
 
     @Test
+    void attachedImagesFormTheirOwnBlock() {
+        Transcript marked = Transcript.marked("●", "⎿", false);
+        assertEquals(List.of("  ⎿  已附加图片 a.png（1386×272）", "  ⎿  未附加图片 b.png：不是 PNG、JPEG、GIF 或 WebP 图片",
+                "", "● 看到了"), render(output -> {
+            marked.startTurn();
+            marked.images(output, List.of("a.png（1386×272）"), List.of("b.png：不是 PNG、JPEG、GIF 或 WebP 图片"));
+            marked.reply(output, "看到了");
+        }));
+        assertEquals(List.of("图片> 已附加 a.png（3×2）", "图片> 未附加 b\\u001b.png：读取失败"),
+                render(output -> Transcript.plain().images(output, List.of("a.png（3×2）"),
+                        List.of("b\u001b.png：读取失败"))));
+    }
+
+    @Test
     void firstBlockOfEachTurnHasNoGap() {
         Transcript transcript = Transcript.marked("●", "⎿", false);
         assertEquals(List.of("● 一", "● 二"), render(output -> {
@@ -154,6 +168,23 @@ class TranscriptTest {
         transcript.startTurn();
         transcript.reply(output, "好的");
         transcript.tool(output, READ, "     1\ta");
+    }
+
+    @Test
+    void commandOutputIsIndentedAsAWholeOnlyWhenMarked() {
+        String text = "工具> 共 2 个：\n  shell — 运行命令\n\n  grep — 搜索";
+        assertEquals(List.of("  工具> 共 2 个：", "    shell — 运行命令", "", "    grep — 搜索"),
+                render(output -> Transcript.marked("●", "⎿", false).notice(output, text)));
+        assertEquals(List.of("工具> 共 2 个：", "  shell — 运行命令", "", "  grep — 搜索"),
+                render(output -> Transcript.plain().notice(output, text)));
+    }
+
+    @Test
+    void onlyMarkedHasAMargin() {
+        assertNull(Transcript.plain().margin());
+        // 段首与结果行的符号跟着终端字符集走：GBK 控制台的 * 段首同样留在最左列。
+        assertEquals("* 回复\n  提示\n",
+                Transcript.forTerminal(Charset.forName("GBK"), false).margin().apply("* 回复\n提示\n", 80));
     }
 
     private static List<String> render(Consumer<PrintWriter> action) {

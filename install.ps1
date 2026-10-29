@@ -164,20 +164,34 @@
     } else {
         # Read and write the raw registry value: [Environment]::SetEnvironmentVariable would
         # expand entries such as %USERPROFILE% into fixed paths.
+        $pathChanged = $false
         $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
         try {
             $userPath = [string] $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             if (-not (Test-HuPathEntry $userPath $bin)) {
                 $newPath = if ($userPath.Trim()) { $userPath.TrimEnd(';') + ';' + $bin } else { $bin }
                 $key.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                $pathChanged = $true
                 Say "Added $bin to the user PATH"
             }
         } finally {
             $key.Close()
         }
-        # Setting and clearing a dummy variable broadcasts WM_SETTINGCHANGE, so new terminals see the PATH.
-        [Environment]::SetEnvironmentVariable('HU_AGENT_PATH_REFRESH', '1', 'User')
-        [Environment]::SetEnvironmentVariable('HU_AGENT_PATH_REFRESH', $null, 'User')
+        if ($pathChanged) {
+            # Broadcast WM_SETTINGCHANGE so new terminals see the PATH. [Environment]::SetEnvironmentVariable also
+            # broadcasts, but waits a full second on every hung window (suspended Store apps count), which can add
+            # up to tens of seconds; SMTO_ABORTIFHUNG skips those windows, as setx does.
+            try {
+                Add-Type -Namespace HuAgent -Name NativeMethods -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);'
+                $result = [UIntPtr]::Zero
+                # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG
+                [void] [HuAgent.NativeMethods]::SendMessageTimeout([IntPtr] 0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref] $result)
+            } catch {
+                # Add-Type can be blocked (it compiles C#); setting and clearing a dummy variable also broadcasts, only slower.
+                [Environment]::SetEnvironmentVariable('HU_AGENT_PATH_REFRESH', '1', 'User')
+                [Environment]::SetEnvironmentVariable('HU_AGENT_PATH_REFRESH', $null, 'User')
+            }
+        }
     }
     if (-not (Test-HuPathEntry $env:Path $bin)) {
         $env:Path = "$bin;$env:Path"

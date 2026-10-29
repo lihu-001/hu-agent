@@ -15,12 +15,19 @@ import java.io.PrintWriter;
  * compact 是 hu 默认：以【权限确认】开头的一行 "【权限确认】工具：参数  问题[y/N] "，不显示原因与调用 ID；
  * 参数太长时问题另起一行，因为没换行的部分会成为行编辑器的提示符，提示符高过终端时 JLine 只画得出最后几行。
  * color 为 true 时（终端能解释 ANSI，见 Splash.ColorSupport）标记与问题显示为黄色，与对话内容区分。
+ * hu 的手动确认多一个选项 a（本次会话不再询问，范围见 SessionScope），问题之后为 "[y/N，a=本次会话不再询问这条命令]"。
  */
 public final class ConfirmPrompt {
     /** 参数显示超过这个列数（中文占两列）时问题另起一行。 */
     static final int INLINE_COLUMNS = 200;
     private static final String LABEL = "【权限确认】";
     private static final String APPROVED_LABEL = "【自动批准】";
+    private static final String SESSION_LABEL = "【本会话允许】";
+
+    /** 确认的回答：拒绝、只允许本次、本次会话不再询问同一范围（见 SessionScope）。 */
+    public enum Answer {
+        DENY, ONCE, SESSION
+    }
 
     private final boolean compact;
     private final boolean color;
@@ -54,18 +61,28 @@ public final class ConfirmPrompt {
      * full 在参数之后追加同样的预览。
      */
     public void ask(PrintWriter output, String reason, ToolCall call, ChangePreview preview, String question) {
+        ask(output, reason, call, preview, question, null);
+    }
+
+    /**
+     * session 非 null 时（hu 的手动确认）多一个选项 a，问题之后为 "[y/N，a=本次会话不再询问" + session + "]"，
+     * session 是 SessionScope.label；为 null 时只有 [y/N]，与之前相同。
+     */
+    public void ask(PrintWriter output, String reason, ToolCall call, ChangePreview preview, String question,
+                    String session) {
+        String choices = question + (session == null ? "[y/N]" : "[y/N，a=本次会话不再询问" + session + "]");
         if (!compact) {
             output.println("权限确认> " + reason);
             output.println("工具> " + call.name() + " [" + call.id() + "]");
             output.println("参数> " + call.arguments());
             printPreview(output, preview, "预览> ");
-            output.print(question + "[y/N] ");
+            output.print(choices + " ");
             return;
         }
         if (preview != null) {
             output.println(paint("1;33", LABEL) + paint("1", call.name()) + "：" + TerminalText.visible(preview.summary()));
             printPreview(output, preview, null);
-            output.print("  " + paint("33", question + "[y/N]") + " ");
+            output.print("  " + paint("33", choices) + " ");
             return;
         }
         String detail = detail(call.arguments());
@@ -73,7 +90,17 @@ public final class ConfirmPrompt {
         if (FramedPrompt.displayWidth(detail) > INLINE_COLUMNS) {
             output.println();
         }
-        output.print("  " + paint("33", question + "[y/N]") + " ");
+        output.print("  " + paint("33", choices) + " ");
+    }
+
+    /** y / yes 只允许本次；提供了会话选项时 a / always 放行本次会话；其余回答（含空行与输入结束）都是拒绝。 */
+    public static Answer answer(String line, boolean session) {
+        String choice = line == null ? "" : line.strip();
+        if (choice.equalsIgnoreCase("y") || choice.equalsIgnoreCase("yes")) {
+            return Answer.ONCE;
+        }
+        return session && (choice.equalsIgnoreCase("a") || choice.equalsIgnoreCase("always"))
+                ? Answer.SESSION : Answer.DENY;
     }
 
     /**
@@ -87,16 +114,29 @@ public final class ConfirmPrompt {
 
     /** preview 非 null 时与 ask 相同，在记录之下显示改动本身，自动批准的改动也看得到改了什么。 */
     public void approved(PrintWriter output, String reason, ToolCall call, ChangePreview preview, String member) {
+        record(output, APPROVED_LABEL, "自动审批模式，已自动批准。", reason, call, preview, member);
+    }
+
+    /**
+     * 本次会话已放行（之前确认时回答过 a）的调用的记录，与 approved 只差标记：
+     * compact 为一行 "【本会话允许】工具：参数"，full 最后一行说明本次会话已允许。
+     */
+    public void allowed(PrintWriter output, String reason, ToolCall call, ChangePreview preview, String member) {
+        record(output, SESSION_LABEL, "本次会话已允许，不再询问。", reason, call, preview, member);
+    }
+
+    private void record(PrintWriter output, String label, String note, String reason, ToolCall call,
+                        ChangePreview preview, String member) {
         String who = member == null ? "" : "[" + member + "] ";
         if (!compact) {
             output.println("权限确认> " + who + reason);
             output.println("工具> " + call.name() + " [" + call.id() + "]");
             output.println("参数> " + call.arguments());
             printPreview(output, preview, "预览> ");
-            output.println("自动审批模式，已自动批准。");
+            output.println(note);
             return;
         }
-        output.println(paint("1;33", APPROVED_LABEL) + who + paint("1", call.name()) + "："
+        output.println(paint("1;33", label) + who + paint("1", call.name()) + "："
                 + (preview == null ? detail(call.arguments()) : TerminalText.visible(preview.summary())));
         printPreview(output, preview, null);
     }

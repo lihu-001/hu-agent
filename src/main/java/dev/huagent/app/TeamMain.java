@@ -442,7 +442,8 @@ public final class TeamMain {
                         systemPrompt(catalog, entries, true) + mcp.promptSuffix() + workflowSuffix + goalSuffix
                                 + contextSuffix,
                         hooks, new TodoReminder(todos), compactor, background, options.events(), options.retry(),
-                        goal, slash, options.debug(), options.prompt(), options.interrupt(), options.transcript());
+                        goal, slash, options.debug(), options.prompt(), options.interrupt(), options.transcript(),
+                        options.images());
         if (startScheduler) {
             scheduleManager.start(debug);
         }

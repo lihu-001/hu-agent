@@ -2,9 +2,13 @@ package dev.huagent.loop;
 
 import dev.huagent.app.ToolUseMain;
 import dev.huagent.config.AgentConfig;
+import dev.huagent.harness.InputImages;
+import dev.huagent.hook.AgentHooks;
+import dev.huagent.model.ChatImage;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.model.EmptyReplyException;
 import dev.huagent.model.ModelClient;
+import dev.huagent.prompt.PromptStyle;
 import dev.huagent.tool.ToolCall;
 import dev.huagent.tool.ToolDefinition;
 import dev.huagent.tool.ToolRegistry;
@@ -14,6 +18,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -243,6 +249,47 @@ class ChatLoopTest {
         } finally {
             Thread.interrupted();
         }
+    }
+
+    @Test
+    void pastedImagePathIsSentAsImageAndKeptWhenNoticesAreAppended() throws Exception {
+        Path png = root.resolve("orca-paste-1.png");
+        assertTrue(ImageIO.write(new BufferedImage(2, 2, BufferedImage.TYPE_INT_RGB), "png", png.toFile()));
+        List<List<ChatMessage>> requests = new ArrayList<>();
+        ModelClient client = (messages, definitions) -> {
+            requests.add(messages);
+            if (requests.size() == 1) {
+                throw new EmptyReplyException("模型响应缺少文本 content");
+            }
+            return new ChatMessage("assistant", "看到了");
+        };
+        StringWriter output = new StringWriter();
+        new ChatLoop(client, registry, 10, ToolUseMain.SYSTEM_PROMPT, AgentHooks.empty(), null, null, null, null,
+                null, null, null, true, PromptStyle.plain(), null, null, new InputImages())
+                .run(new BufferedReader(new StringReader(png + " 这是什么\nexit\n")), new PrintWriter(output));
+
+        assertEquals(2, requests.size());
+        ChatMessage first = requests.get(0).getLast();
+        assertEquals(png + " 这是什么", first.content(), "路径文字仍留在消息里");
+        assertEquals(List.of("image/png"), first.images().stream().map(ChatImage::mediaType).toList());
+        ChatMessage retried = requests.get(1).getLast();
+        assertTrue(retried.content().endsWith(ChatLoop.EMPTY_REPLY_NOTICE));
+        assertEquals(first.images(), retried.images(), "附加提醒不能丢掉图片");
+        assertTrue(output.toString().contains("图片> 已附加 orca-paste-1.png（2×2）"), output.toString());
+    }
+
+    @Test
+    void withoutInputImagesPathsStayPlainText() throws Exception {
+        Path png = root.resolve("a.png");
+        assertTrue(ImageIO.write(new BufferedImage(1, 1, BufferedImage.TYPE_INT_RGB), "png", png.toFile()));
+        List<ChatMessage> sent = new ArrayList<>();
+        String output = run(png + "\nexit\n", (messages, definitions) -> {
+            sent.add(messages.getLast());
+            return new ChatMessage("assistant", "好");
+        }, 10);
+
+        assertEquals(List.of(), sent.getFirst().images());
+        assertFalse(output.contains("图片>"));
     }
 
     private ToolCall call(String id, String name, Map<String, Object> args) {

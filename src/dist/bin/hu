@@ -18,6 +18,7 @@ hu_home=$(cd "$app_dir/.." && pwd)
 # hu update：重新运行安装脚本。默认从 GitHub 取安装脚本、装最新发布版；--local 构建并安装当前目录的源码；
 # --pkg 安装本地的 hu-agent.tar.gz（或其所在目录）。后两者通过 HU_PACKAGE 传入应用包，
 # --pkg 用随包安装在 app/ 下的安装脚本，不联网。
+# 默认只显示更新状态，失败时显示一行原因；--debug / -d（放在来源参数前）显示完整的构建与安装输出。
 # 安装会整体替换 app 目录，本脚本与安装脚本已经打开的是旧文件，继续执行不受影响。
 if [ "${1:-}" = update ]; then
     export HU_HOME="$hu_home"
@@ -26,7 +27,21 @@ if [ "${1:-}" = update ]; then
         HU_BIN_DIR=$(cd "$(dirname "$0")" && pwd)
         export HU_BIN_DIR
     fi
-    if [ $# -eq 1 ]; then
+    shift
+    update_debug=0
+    case ${1:-} in
+        --debug | -d) update_debug=1; shift ;;
+    esac
+    case $# in
+        0) ;;
+        1) [ "$1" = --local ] || { echo 'hu: 用法：hu update [--debug | -d] [--local | --pkg <应用包>]' >&2; exit 2; } ;;
+        2) [ "$1" = --pkg ] && [ -n "$2" ] || { echo 'hu: 用法：hu update [--debug | -d] [--local | --pkg <应用包>]' >&2; exit 2; } ;;
+        *) echo 'hu: 用法：hu update [--debug | -d] [--local | --pkg <应用包>]' >&2; exit 2 ;;
+    esac
+    # 子 shell 保持遇错即停，外层只负责简洁状态和退出码。
+    run_update() (
+    set -e
+    if [ $# -eq 0 ]; then
         # 先完整下载再执行：curl 失败时不会把空脚本交给 sh 而误报成功。
         installer=$(curl -fsSL https://raw.githubusercontent.com/lihu-001/hu-agent/main/install.sh) || {
             echo "hu: 下载安装脚本失败" >&2
@@ -35,7 +50,7 @@ if [ "${1:-}" = update ]; then
         printf '%s\n' "$installer" | sh
         exit
     fi
-    if [ $# -eq 2 ] && [ "$2" = --local ]; then
+    if [ $# -eq 1 ] && [ "$1" = --local ]; then
         if [ ! -f src/dist/bin/hu ] || [ ! -f install.sh ]; then
             echo "hu: 请在 hu-agent 源码目录中运行 hu update --local" >&2
             exit 2
@@ -45,16 +60,37 @@ if [ "${1:-}" = update ]; then
         HU_PACKAGE="$(pwd)/target/hu-agent.tar.gz" sh ./install.sh
         exit
     fi
-    if [ $# -eq 3 ] && [ "$2" = --pkg ] && [ -n "$3" ]; then
+    if [ $# -eq 2 ] && [ "$1" = --pkg ] && [ -n "$2" ]; then
         if [ ! -f "$app_dir/install.sh" ]; then
             echo "hu: 找不到 $app_dir/install.sh，请先重新运行一次安装命令" >&2
             exit 1
         fi
-        HU_PACKAGE=$3 sh "$app_dir/install.sh"
+        HU_PACKAGE=$2 sh "$app_dir/install.sh"
         exit
     fi
-    echo "hu: 用法：hu update [--local | --pkg <应用包>]" >&2
-    exit 2
+    )
+    echo '更新中'
+    set +e
+    update_reason=
+    if [ "$update_debug" = 1 ]; then
+        run_update "$@"
+        update_code=$?
+    else
+        # 丢弃标准输出、留下标准错误：失败原因取最后一条 hu 或安装脚本报出的错误。
+        update_errors=$(run_update "$@" 2>&1 >/dev/null)
+        update_code=$?
+        update_reason=$(printf '%s\n' "$update_errors" | sed -n -e 's/^hu: //p' -e 's/^hu-agent> 错误：//p' | tail -n 1)
+    fi
+    if [ "$update_code" -eq 0 ]; then
+        echo '更新完成'
+    elif [ -n "$update_reason" ]; then
+        echo "更新失败：$update_reason" >&2
+    elif [ "$update_debug" = 1 ]; then
+        echo '更新失败' >&2
+    else
+        echo '更新失败，加 --debug 查看详细日志' >&2
+    fi
+    exit "$update_code"
 fi
 
 java_cmd=${HU_JAVA:-$hu_home/runtime/bin/java}

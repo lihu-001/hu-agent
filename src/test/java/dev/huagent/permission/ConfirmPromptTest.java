@@ -112,6 +112,62 @@ class ConfirmPromptTest {
                 + "  仅允许本次调用？[y/N] ", buffer.toString());
     }
 
+    @Test
+    void sessionChoiceIsOfferedInsideTheBrackets() {
+        ToolCall call = new ToolCall("c", "shell", "{\"command\":\"ls\"}");
+        String n = System.lineSeparator();
+        assertEquals("【权限确认】shell：ls  仅允许本次调用？[y/N，a=本次会话不再询问这条命令] ",
+                ask(ConfirmPrompt.compact(false), call, "这条命令"));
+        assertEquals("\u001b[1;33m【权限确认】\u001b[0m\u001b[1mshell\u001b[0m：ls  "
+                + "\u001b[33m仅允许本次调用？[y/N，a=本次会话不再询问这条命令]\u001b[0m ",
+                ask(ConfirmPrompt.compact(true), call, "这条命令"));
+        assertEquals("权限确认> 需要确认" + n + "工具> shell [c]" + n + "参数> {\"command\":\"ls\"}" + n
+                + "仅允许本次调用？[y/N，a=本次会话不再询问这条命令] ", ask(ConfirmPrompt.full(), call, "这条命令"));
+    }
+
+    @Test
+    void answersAreOnceSessionOrDeny() {
+        for (String yes : new String[]{"y", "yes", " Y ", "YES"}) {
+            assertEquals(ConfirmPrompt.Answer.ONCE, ConfirmPrompt.answer(yes, true), yes);
+            assertEquals(ConfirmPrompt.Answer.ONCE, ConfirmPrompt.answer(yes, false), yes);
+        }
+        for (String always : new String[]{"a", " A ", "always", "ALWAYS"}) {
+            assertEquals(ConfirmPrompt.Answer.SESSION, ConfirmPrompt.answer(always, true), always);
+            // 没有提供会话选项时（教程各入口与队友的旧接口）a 与其他回答一样是拒绝。
+            assertEquals(ConfirmPrompt.Answer.DENY, ConfirmPrompt.answer(always, false), always);
+        }
+        for (String other : new String[]{"", " ", "n", "no", "all", "yes all", "exit"}) {
+            assertEquals(ConfirmPrompt.Answer.DENY, ConfirmPrompt.answer(other, true), other);
+        }
+        assertEquals(ConfirmPrompt.Answer.DENY, ConfirmPrompt.answer(null, true));
+    }
+
+    @Test
+    void allowedRecordDiffersFromAutoApprovalOnlyInItsLabel() {
+        ToolCall call = new ToolCall("c", "shell", "{\"command\":\"ls\"}");
+        String n = System.lineSeparator();
+        assertEquals("【本会话允许】shell：ls" + n, allowed(ConfirmPrompt.compact(false), call, null));
+        assertEquals("【本会话允许】[alice] shell：ls" + n, allowed(ConfirmPrompt.compact(false), call, "alice"));
+        assertEquals("权限确认> 需要确认" + n + "工具> shell [c]" + n + "参数> {\"command\":\"ls\"}" + n
+                + "本次会话已允许，不再询问。" + n, allowed(ConfirmPrompt.full(), call, null));
+    }
+
+    private static String allowed(ConfirmPrompt confirm, ToolCall call, String member) {
+        StringWriter buffer = new StringWriter();
+        PrintWriter output = new PrintWriter(buffer);
+        confirm.allowed(output, "需要确认", call, null, member);
+        output.flush();
+        return buffer.toString();
+    }
+
+    private static String ask(ConfirmPrompt confirm, ToolCall call, String session) {
+        StringWriter buffer = new StringWriter();
+        PrintWriter output = new PrintWriter(buffer);
+        confirm.ask(output, "需要确认", call, null, "仅允许本次调用？", session);
+        output.flush();
+        return buffer.toString();
+    }
+
     private static String approved(ConfirmPrompt confirm, ToolCall call, String member) {
         StringWriter buffer = new StringWriter();
         PrintWriter output = new PrintWriter(buffer);

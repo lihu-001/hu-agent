@@ -5,6 +5,7 @@ import dev.huagent.tool.ToolCall;
 import dev.huagent.tool.ToolDefinition;
 
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -94,6 +95,19 @@ class OpenAiClientTest {
         assertFalse(request.get().getBooleanValue("stream"));
         assertFalse(request.get().containsKey("tools"));
         assertEquals("你好", request.get().getJSONArray("messages").getJSONObject(1).getString("content"));
+    }
+
+    @Test
+    void sendsUserImagesAsContentPartsWithDataUrls() throws Exception {
+        client(baseUrl, Duration.ofSeconds(5)).complete(List.of(new ChatMessage("user", "你好"),
+                ChatMessage.user("看看这张图", List.of(new ChatImage("image/png", "iVBORw0K")))), List.of());
+
+        JSONArray messages = request.get().getJSONArray("messages");
+        assertEquals("你好", messages.getJSONObject(0).getString("content"), "不带图片的消息 content 仍是文本");
+        assertEquals(JSONArray.of(JSONObject.of("type", "text", "text", "看看这张图"),
+                        JSONObject.of("type", "image_url", "image_url",
+                                JSONObject.of("url", "data:image/png;base64,iVBORw0K"))),
+                messages.getJSONObject(1).getJSONArray("content"));
     }
 
     @Test

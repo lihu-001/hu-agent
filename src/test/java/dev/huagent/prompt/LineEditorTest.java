@@ -32,6 +32,10 @@ class LineEditorTest {
     /** xterm 的方向键序列（JLine 发出 keypad_xmit 后终端使用应用模式）。 */
     private static final String DOWN = "\u001bOB";
     private static final String UP = "\u001bOA";
+    private static final String LEFT = "\u001bOD";
+    /** 括号粘贴模式下终端包在粘贴内容前后的标记。 */
+    private static final String PASTE_BEGIN = "\u001b[200~";
+    private static final String PASTE_END = "\u001b[201~";
     /** JLine 开启、关闭按键鼠标跟踪时写出的序列（1000：按键与滚轮）。 */
     private static final String TRACK_MOUSE = "\u001b[?1000h";
     private static final String UNTRACK_MOUSE = "\u001b[?1000l";
@@ -114,6 +118,37 @@ class LineEditorTest {
 
         type("lo\r");
         assertEquals("hello", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void marginAppliesToTheConversationButNotToTheInputBox() throws Exception {
+        editor.margin(new Margin("●", "⎿"));
+        PrintWriter output = editor.output();
+        output.println("启动页");
+        output.flush();
+        awaitScreen("启动页");
+
+        editor.taskRunning(true);
+        output.println("后台> bg_1 completed");
+        // 80 列的终端每行最多 79 列：第一行排下 "  提示> " 与 35 个字，续行与正文对齐。
+        output.println("提示> " + "很长".repeat(40));
+        output.flush();
+        awaitScreen("  后台> bg_1 completed");
+        awaitScreen("\n  长很长");
+        CompletableFuture<String> answer = read("【权限确认】shell：ls  [y/N] ");
+        awaitScreen("  【权限确认】shell：ls  [y/N] ");
+        type("y\r");
+        assertEquals("y", answer.get(5, TimeUnit.SECONDS));
+        editor.taskRunning(false);
+
+        CompletableFuture<String> line = read("❯ ");
+        output.println("队友> 完成");
+        output.flush();
+        awaitScreen("  队友> 完成");
+        type("x\r");
+        assertEquals("x", line.get(5, TimeUnit.SECONDS));
+        assertFalse(screen().contains("  启动页"), "任务以外的输出原样：" + screen());
+        assertFalse(screen().contains("  ❯"), "输入框的提示符原样：" + screen());
     }
 
     @Test
@@ -328,6 +363,48 @@ class LineEditorTest {
         awaitScreen(UNTRACK_MOUSE, shown);
         type("\r");
         assertEquals("/cmd x", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void multiLinePasteShowsOnePlaceholderAndSubmitsTheText() throws Exception {
+        CompletableFuture<String> line = read("A> ");
+        type("看看" + PASTE_BEGIN + "第一行\r第二行\n第三行\n" + PASTE_END);
+        awaitScreen("[粘贴文本 #1，共 3 行]");
+        assertFalse(screen().contains("第二行"), "原文不画在输入行里：" + screen());
+        type("\r");
+        assertEquals("看看第一行\n第二行\n第三行", line.get(5, TimeUnit.SECONDS));
+
+        // 历史里是占位，↑ 取回后提交同样换回原文。
+        CompletableFuture<String> recalled = read("B> ");
+        type(UP + "\r");
+        assertEquals("看看第一行\n第二行\n第三行", recalled.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void backspaceDeletesAPastedPlaceholderWhole() throws Exception {
+        CompletableFuture<String> line = read("A> ");
+        type("看" + PASTE_BEGIN + "a\nb" + PASTE_END + "\u007f\u007f吧\r");
+        assertEquals("吧", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void keysArrivingTogetherOnAWindowsConsoleArePastedNotSubmitted() throws Exception {
+        editor = new LineEditor(terminal, List::of, clock::get, true);
+        CompletableFuture<String> line = read("A> ");
+        // Windows 控制台没有括号粘贴时，粘贴的文字连同回车、Tab 逐个作为按键一起送来。
+        type("第一行\r\t第二行\r");
+        awaitScreen("[粘贴文本 #1，共 2 行]");
+        assertFalse(line.isDone(), "粘贴里的回车不提交");
+        // 单独按下的回车照常提交。
+        type("\r");
+        assertEquals("第一行\n\t第二行", line.get(5, TimeUnit.SECONDS));
+
+        // 一起送来的按键序列（方向键）在粘贴处停下，照常作为按键处理。
+        CompletableFuture<String> edited = read("B> ");
+        type("ac" + LEFT + "b");
+        Thread.sleep(300);
+        type("\r");
+        assertEquals("abc", edited.get(5, TimeUnit.SECONDS));
     }
 
     /**

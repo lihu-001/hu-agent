@@ -1,10 +1,13 @@
 package dev.huagent.harness;
 
+import dev.huagent.prompt.Margin;
 import dev.huagent.prompt.TerminalText;
 import dev.huagent.tool.ToolCall;
 
 import java.io.PrintWriter;
 import java.nio.charset.Charset;
+import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * 非 debug 模式下助手的回复与工具调用在终端上的样子，只影响终端，消息历史与请求内容不变。调用方负责加锁与 flush。
@@ -19,9 +22,12 @@ import java.nio.charset.Charset;
  * </pre>
  * color 为 true 时（终端能解释 ANSI）工具的 ● 为绿色、失败时为红色，工具名加粗，结果变暗、失败时为红色。
  * 需要确认的工具在执行前先空行（beforeTool），确认行与随后的摘要同属一段。
+ * marked 的左边距与折行由行编辑器套用 margin（见 Margin）：其他顶格的输出补两列，长行折行后与正文对齐。
  */
 public final class Transcript {
     private static final String PLAIN_REPLY = "助手> ";
+    /** 非空行的行首；换行符保持原样。 */
+    private static final Pattern LINE_START = Pattern.compile("^(?=.)", Pattern.MULTILINE);
 
     private final boolean marked;
     private final String bullet;
@@ -72,6 +78,40 @@ public final class Transcript {
         }
         shown = true;
         separated = false;
+    }
+
+    /**
+     * 随本轮输入附加的图片（见 InputImages）：attached 是已附加的，skipped 是没能附加的及原因。
+     * marked 时与工具结果行一样以 ⎿ 开头，单独成一段；没能附加的为红色。
+     */
+    public void images(PrintWriter output, List<String> attached, List<String> skipped) {
+        if (!marked) {
+            attached.forEach(item -> output.println("图片> 已附加 " + TerminalText.visible(item)));
+            skipped.forEach(item -> output.println("图片> 未附加 " + TerminalText.visible(item)));
+            return;
+        }
+        separate(output);
+        for (String item : attached) {
+            output.println("  " + paint("2", branch + "  已附加图片 " + TerminalText.visible(item)));
+        }
+        for (String item : skipped) {
+            output.println("  " + paint("31", branch + "  未附加图片 " + TerminalText.visible(item)));
+        }
+        shown = true;
+        separated = false;
+    }
+
+    /**
+     * 本地命令（如 /tools、/status）的输出：marked 时每行缩进两格，与回复的续行对齐，
+     * 列表项原有的缩进在此之上保留，层次不变；plain 原样输出。
+     */
+    public void notice(PrintWriter output, String text) {
+        output.println(marked ? LINE_START.matcher(text).replaceAll("  ") : text);
+    }
+
+    /** marked 的左边距与折行，符号与段首、结果行相同；plain 为 null，输出原样。 */
+    public Margin margin() {
+        return marked ? new Margin(bullet, branch) : null;
     }
 
     /** 执行工具之前调用：先空行，执行中弹出的权限确认就排在这一段里。 */

@@ -3,6 +3,7 @@ package dev.huagent.prompt;
 import dev.huagent.command.SlashCommand;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.Binding;
+import org.jline.reader.Buffer;
 import org.jline.reader.Candidate;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
@@ -14,6 +15,7 @@ import org.jline.terminal.Attributes;
 import org.jline.terminal.MouseEvent;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.jline.terminal.impl.AbstractWindowsTerminal;
 import org.jline.utils.AttributedString;
 import org.jline.utils.AttributedStyle;
 import org.jline.utils.NonBlockingReader;
@@ -50,6 +52,10 @@ import java.util.function.Supplier;
  * 确认问答里按下时以空回答（拒绝）结束确认并中断任务。任务期间不显示输入行，由监听线程读按键，
  * 键入的文字攒起来，回到提示符时填进输入行。Ctrl+C 一直作为按键读取，不产生信号，Shell 命令与 MCP server 不会收到。
  *
+ * <p>粘贴与 Claude Code 相同：多行或很长的文本在输入行里只显示一行占位，提交时换回原文（PastedText），退格整个删掉占位。
+ * 终端支持括号粘贴时按粘贴标记整段读取；Windows 控制台的粘贴可能逐个作为按键送来，按下一个键时后面已有字符在等，
+ * 就当作粘贴整段读完（keyBursts），其中的回车是换行而不是提交。
+ *
  * <p>取不到系统终端时 open 返回 null，调用方继续用 Console 按行读取。
  */
 public final class LineEditor implements AutoCloseable {
@@ -64,6 +70,8 @@ public final class LineEditor implements AutoCloseable {
     private static final int CTRL_C = 0x03;
     /** 任务期间监听线程每次最多等这么久的按键；确认问答开始读取时最多等这么久它交出终端。 */
     private static final long POLL_MILLIS = 50;
+    /** 一次粘贴的字符逐个送来时，相邻字符最多间隔这么久；超过就算粘贴结束。 */
+    private static final long BURST_GAP_MILLIS = 20;
     /** 第一次设置标题前把原标题压栈（XTPUSHTITLE）。 */
     private static final String SAVE_TITLE = "\u001b[22;0t";
     /** 先清空标题，不支持标题栈的终端由此回到默认标题；支持的终端随后出栈恢复原标题（XTPOPTITLE）。 */
@@ -75,9 +83,12 @@ public final class LineEditor implements AutoCloseable {
     private final PromptWriter writer = new PromptWriter();
     private final PrintWriter output = new PrintWriter(writer, true);
     private final LongSupplier nanoTime;
+    private final PastedText pasted = new PastedText();
     private final DoublePress escape;
     private final DoublePress interrupt;
     private volatile Runnable interruptTask = () -> { };
+    /** 对话区的左边距与折行，见 margin；为 null 时输出原样写出。 */
+    private volatile Margin margin;
     /** 本次读取开始时有任务在运行，即任务中的确认问答；只在读取线程上访问。 */
     private boolean answering;
 
@@ -99,7 +110,13 @@ public final class LineEditor implements AutoCloseable {
         this(terminal, commands, System::nanoTime);
     }
 
+    /** Windows 控制台按连续送来的按键识别粘贴，见类注释。 */
     LineEditor(Terminal terminal, Supplier<? extends Collection<SlashCommand>> commands, LongSupplier nanoTime) {
+        this(terminal, commands, nanoTime, terminal instanceof AbstractWindowsTerminal<?>);
+    }
+
+    LineEditor(Terminal terminal, Supplier<? extends Collection<SlashCommand>> commands, LongSupplier nanoTime,
+               boolean keyBursts) {
         this.terminal = Objects.requireNonNull(terminal);
         this.nanoTime = Objects.requireNonNull(nanoTime);
         this.escape = new DoublePress(nanoTime);
@@ -120,6 +137,15 @@ public final class LineEditor implements AutoCloseable {
         });
         onMenu(LineReader.EXPAND_OR_COMPLETE, () -> fill(menu.choice(true)));
         onMenu(LineReader.ACCEPT_LINE, () -> fill(menu.choice(false)));
+        reader.getWidgets().put(LineReader.BEGIN_PASTE, () -> paste(reader.readPaste()));
+        Widget backspace = reader.getWidgets().get(LineReader.BACKWARD_DELETE_CHAR);
+        reader.getWidgets().put(LineReader.BACKWARD_DELETE_CHAR, () -> deletePlaceholder() || backspace.apply());
+        if (keyBursts) {
+            // 包在 onMenu 外面：粘贴里的回车与 Tab 先当作文字，不选列表、不提交。
+            onBurst(LineReader.SELF_INSERT);
+            onBurst(LineReader.ACCEPT_LINE);
+            onBurst(LineReader.EXPAND_OR_COMPLETE);
+        }
         reader.getWidgets().put(LineReader.MOUSE, this::mouse);
         reader.getWidgets().put(CONTROL_WIDGET, () -> {
             terminal.writer().write(writer.control);
@@ -168,7 +194,7 @@ public final class LineEditor implements AutoCloseable {
 
     /**
      * 每次 readLine 读一行，以 output 中尚未换行的提示语作为提示符；输入结束（空行上 Ctrl+D、连按两次 Ctrl+C）时返回 null。
-     * 不在任务中时，任务期间键入的文字预先填进输入行。
+     * 不在任务中时，任务期间键入的文字预先填进输入行。粘贴的占位换回原文，返回的一行里可能有换行。
      */
     public BufferedReader input() {
         return new BufferedReader(Reader.nullReader()) {
@@ -181,11 +207,13 @@ public final class LineEditor implements AutoCloseable {
                         return null;
                     }
                     reader.hint(null, 0);
+                    // 任务中的确认问答属于对话区，与上面的输出一样留出左边距；输入框的 ❯ 保持原样。
+                    String shown = indent(prompt, answering);
                     while (true) {
                         try {
                             // JLine 把提示符里的 % 当作格式（%N、%{…%} 等，未知的直接丢掉），
                             // 确认提示里有模型给出的命令，必须原样显示。
-                            return reader.readLine(prompt.replace("%", "%%"), null, (Character) null, typed);
+                            return pasted.expand(reader.readLine(shown.replace("%", "%%"), null, (Character) null, typed));
                         } catch (UserInterruptException e) {
                             // 只剩外部发来的 INT 信号（Ctrl+C 是按键，见 interruptKey）：有内容时清掉重读，空行上结束输入。
                             if (e.getPartialLine() == null || e.getPartialLine().isEmpty()) {
@@ -204,6 +232,15 @@ public final class LineEditor implements AutoCloseable {
                 }
             }
         };
+    }
+
+    /**
+     * 对话区的左边距与折行（见 Margin，hu 交互终端用 Transcript.margin）：任务期间的输出、读取期间插到输入行上方的输出
+     * 与任务中确认问答的提示语逐行套用，按当前终端宽度折行。输入框（分隔线与 ❯）和启动页不在任务期间输出，保持原样。
+     * 为 null 时（默认）输出原样写出。
+     */
+    public void margin(Margin margin) {
+        this.margin = margin;
     }
 
     /** 任务中按 Esc 或 Ctrl+C 时调用 action（hu 接到 TurnInterrupt.request）；在读按键的线程上调用。 */
@@ -291,6 +328,18 @@ public final class LineEditor implements AutoCloseable {
             answering = false;
             switchMode();
             keys.notifyAll();
+        }
+    }
+
+    /** transcript 为 true（属于对话区）且设置了 margin 时按当前终端宽度套用左边距与折行，否则原样返回。 */
+    private String indent(String text, boolean transcript) {
+        Margin current = margin;
+        return current == null || !transcript ? text : current.apply(text, columns());
+    }
+
+    private boolean running() {
+        synchronized (keys) {
+            return task;
         }
     }
 
@@ -464,6 +513,28 @@ public final class LineEditor implements AutoCloseable {
         reader.getWidgets().put(widget, () -> reader.showing() && action.getAsBoolean() || original.apply());
     }
 
+    /** 粘贴的文字插入光标处，长文本折叠成占位（见 PastedText）。 */
+    private boolean paste(String text) {
+        reader.getBuffer().write(pasted.insert(text));
+        return true;
+    }
+
+    /** 光标前是粘贴的占位时退格整个删掉，返回 true；否则返回 false，照常删一个字。 */
+    private boolean deletePlaceholder() {
+        Buffer buffer = reader.getBuffer();
+        int length = pasted.endingIn(buffer.substring(0, buffer.cursor()));
+        return length > 0 && buffer.backspace(length) > 0;
+    }
+
+    /** 按键之后马上还有字符在等时，连同这个按键当作一次粘贴（见 MenuReader.readBurst），否则照常执行原来的功能。 */
+    private void onBurst(String widget) {
+        Widget original = reader.getWidgets().get(widget);
+        reader.getWidgets().put(widget, () -> {
+            String burst = reader.readBurst(BURST_GAP_MILLIS);
+            return burst == null ? original.apply() : paste(burst);
+        });
+    }
+
     /** 用候选替换整行输入，按候选的要求补一个空格；candidate 为 null 时不处理，返回 false。 */
     private boolean fill(Candidate candidate) {
         if (candidate == null) {
@@ -521,17 +592,18 @@ public final class LineEditor implements AutoCloseable {
                 if (end > 0) {
                     String lines = pending.substring(0, end);
                     pending.delete(0, end);
+                    // 读取期间插到上方的是其他线程的输出（后台、定时、队友），与任务期间的输出一样属于对话区。
                     if (reading) {
-                        reader.printAbove(lines);
+                        reader.printAbove(indent(lines, true));
                     } else {
-                        terminal.writer().write(lines);
+                        terminal.writer().write(indent(lines, running()));
                     }
                 }
                 if (reading && !pending.isEmpty()) {
                     // 读取期间出现的提示语：事件轮之后重画的同一个提示符丢弃，
                     // 其他的（如队友的确认请求）作为一行插到上方，用户在当前输入行回答。
                     if (!pending.toString().equals(prompt)) {
-                        reader.printAbove(pending.toString());
+                        reader.printAbove(indent(pending.toString(), true));
                     }
                     pending.setLength(0);
                 }
@@ -645,6 +717,31 @@ public final class LineEditor implements AutoCloseable {
         boolean exit() {
             state = State.EOF;
             return true;
+        }
+
+        /** 括号粘贴：开始标记已经读掉，读到结束标记为止。 */
+        String readPaste() {
+            return doReadStringUntil(BRACKETED_PASTE_END);
+        }
+
+        /**
+         * 刚读到的按键之后马上（1 ms 内）还有字符在等，就是一次粘贴：连同这个按键读完整段并返回，
+         * 相邻字符间隔超过 gapMillis 时结束；否则返回 null。遇到 Esc 等控制字符停下，留给按键绑定处理。
+         */
+        String readBurst(long gapMillis) {
+            String key = getLastBinding();
+            if (key == null || !pastable(peekCharacter(1))) {
+                return null;
+            }
+            StringBuilder text = new StringBuilder(key);
+            while (pastable(peekCharacter(gapMillis))) {
+                text.appendCodePoint(readCharacter());
+            }
+            return text.toString();
+        }
+
+        private static boolean pastable(int c) {
+            return c >= 0 && (c == '\t' || c == '\r' || c == '\n' || !Character.isISOControl(c));
         }
 
         @Override

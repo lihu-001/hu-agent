@@ -130,7 +130,17 @@ public final class OpenAiClient implements ModelClient, ModelSelection {
     private JSONObject serializeMessage(ChatMessage message) {
         JSONObject json = new JSONObject();
         json.put("role", message.role());
-        if (message.content() != null) {
+        if (!message.images().isEmpty()) {
+            // 带图片的用户消息：content 改为内容片段数组，文字在前、图片以 data URL 发送。
+            JSONArray parts = new JSONArray();
+            if (StrUtil.isNotBlank(message.content())) {
+                parts.add(JSONObject.of("type", "text", "text", message.content()));
+            }
+            for (ChatImage image : message.images()) {
+                parts.add(JSONObject.of("type", "image_url", "image_url", JSONObject.of("url", image.dataUrl())));
+            }
+            json.put("content", parts);
+        } else if (message.content() != null) {
             json.put("content", message.content());
         }
         if (message.toolCallId() != null) {

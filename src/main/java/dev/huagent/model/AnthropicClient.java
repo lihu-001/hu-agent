@@ -191,8 +191,15 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
                     toolResult.put("content", message.content());
                 }
                 blocks.add(toolResult);
-            } else if (StrUtil.isNotBlank(message.content())) {
-                blocks.add(JSONObject.of("type", "text", "text", message.content()));
+            } else {
+                // 与官方建议相同，图片块排在文字之前。
+                for (ChatImage image : message.images()) {
+                    blocks.add(JSONObject.of("type", "image", "source", JSONObject.of("type", "base64",
+                            "media_type", image.mediaType(), "data", image.data())));
+                }
+                if (StrUtil.isNotBlank(message.content())) {
+                    blocks.add(JSONObject.of("type", "text", "text", message.content()));
+                }
             }
             if (assistant) {
                 for (ToolCall call : message.toolCalls()) {

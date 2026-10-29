@@ -48,7 +48,7 @@ class PermissionGateTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"n", "no", "", " ", "yes all", "allow", "exit", "quit"})
+    @ValueSource(strings = {"n", "no", "", " ", "yes all", "allow", "exit", "quit", "a", "always"})
     void otherAnswersDeny(String answer) throws Exception {
         assertNotNull(gate(new BufferedReader(new StringReader(answer + "\n")), new StringWriter())
                 .denialReason(call("shell", Map.of("command", "echo test"))));

@@ -14,9 +14,9 @@
 | 位置 | 内容 |
 | --- | --- |
 | `HuMain` | hu 命令的入口：读配置、组装会话、启动页、终端标题 |
-| `prompt/` | 终端界面。`FramedPrompt` 是输入框上方那条分隔线（状态栏：自动审批标记、模型名、Git 分支、上下文剩余与最大值）；`Splash` 是启动页；`LineEditor`、`SlashMenu`、`SlashCompleter` 负责输入行与斜杠命令列表；`TerminalTitle` 是终端标题 |
+| `prompt/` | 终端界面。`FramedPrompt` 是输入框上方那条分隔线（状态栏：自动审批标记、模型名、Git 分支、上下文剩余与最大值）；`Splash` 是启动页；`LineEditor`、`SlashMenu`、`SlashCompleter` 负责输入行与斜杠命令列表；`PastedText` 把粘贴的长文本折叠成一行占位；`TerminalTitle` 是终端标题；`Margin` 是对话区的左边距与折行（任务期间的输出由 `LineEditor` 逐行套用） |
 | `loop/ChatLoop` | 对话循环：请求模型、执行工具、每轮调用上限、终端显示 |
-| `harness/` | 显示与运行辅助：`Transcript`（回复与工具调用在终端上的分段样式：`●` 标记、`⎿` 结果行、段间空行）、`ToolTrace`（工具调用摘要的内容）、`TurnInterrupt`（Esc / Ctrl+C 中断）、`EventHub` |
+| `harness/` | 显示与运行辅助：`Transcript`（回复与工具调用在终端上的分段样式：`●` 标记、`⎿` 结果行、段间空行）、`ToolTrace`（工具调用摘要的内容）、`TurnInterrupt`（Esc / Ctrl+C 中断）、`InputImages`（输入里的图片路径作为图片发给模型）、`EventHub` |
 | `tool/`、`tool/file/` | 基础工具：shell、read_file、write_file、edit_file、glob、grep |
 | `permission/` | 权限规则（`PermissionPolicy`）、确认提示（`ConfirmPrompt`）、自动审批 |
 | `command/` | 斜杠命令（`/model`、`/status`、`/auto` 等） |

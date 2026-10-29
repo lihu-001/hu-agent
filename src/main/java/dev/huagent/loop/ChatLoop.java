@@ -9,6 +9,7 @@ import dev.huagent.goal.GoalCommand;
 import dev.huagent.goal.GoalController;
 import dev.huagent.goal.GoalDecision;
 import dev.huagent.harness.EventHub;
+import dev.huagent.harness.InputImages;
 import dev.huagent.harness.ModelRetryPolicy;
 import dev.huagent.harness.ToolTrace;
 import dev.huagent.harness.Transcript;
@@ -81,6 +82,8 @@ public final class ChatLoop {
     private final TurnInterrupt interrupt;
     /** 回复与工具调用摘要的显示样式；hu 交互终端用 Transcript.marked，其余构造器为 "助手> "、"工具> "。 */
     private final Transcript transcript;
+    /** 用户输入里的图片路径作为图片发送；为 null 时输入只作为文字发送。 */
+    private final InputImages images;
     /** 最近一次主对话请求之后的上下文 token 数，-1 表示未知；只用于提示符显示。 */
     private int contextTokens = -1;
 
@@ -195,6 +198,19 @@ public final class ChatLoop {
                     BackgroundManager background, EventHub events, ModelRetryPolicy retryPolicy,
                     GoalController goal, CommandRegistry commands, boolean debug, PromptStyle prompt,
                     TurnInterrupt interrupt, Transcript transcript) {
+        this(client, registry, maxModelCalls, systemPrompt, hooks, reminder, compactor, background, events,
+                retryPolicy, goal, commands, debug, prompt, interrupt, transcript, null);
+    }
+
+    /**
+     * images 非 null 时，用户输入里的图片文件路径（终端粘贴截图或拖入文件得到的路径）作为图片随这条消息发给模型，
+     * 并在终端上说明附加了哪些图片（见 InputImages）；为 null 时与之前完全相同。
+     */
+    public ChatLoop(ModelClient client, ToolRegistry registry, int maxModelCalls, String systemPrompt,
+                    AgentHooks hooks, TodoReminder reminder, ContextCompactor compactor,
+                    BackgroundManager background, EventHub events, ModelRetryPolicy retryPolicy,
+                    GoalController goal, CommandRegistry commands, boolean debug, PromptStyle prompt,
+                    TurnInterrupt interrupt, Transcript transcript, InputImages images) {
         if (maxModelCalls <= 0) {
             throw new IllegalArgumentException("每轮模型调用上限必须为正数");
         }
@@ -214,6 +230,7 @@ public final class ChatLoop {
         this.prompt = Objects.requireNonNull(prompt);
         this.interrupt = interrupt;
         this.transcript = transcript == null ? Transcript.plain() : transcript;
+        this.images = images;
     }
 
     public void run(BufferedReader input, PrintWriter output) throws IOException {
@@ -313,7 +330,8 @@ public final class ChatLoop {
                     return;
                 }
                 if (result != null && result.kind() == CommandResult.Kind.PRINT) {
-                    print(output, result.text());
+                    String text = result.text();
+                    print(output, out -> transcript.notice(out, text));
                     continue;
                 }
                 if (result != null) {
@@ -370,7 +388,12 @@ public final class ChatLoop {
                             output.println(note);
                         }
                     }
-                    request.add(new ChatMessage("user", line));
+                    // 钩子放行后才读图片：被拒绝的提示词不用读文件。
+                    InputImages.Result pasted = images == null ? null : images.attach(line);
+                    request.add(pasted == null ? new ChatMessage("user", line) : ChatMessage.user(line, pasted.images()));
+                    if (pasted != null && !pasted.isEmpty()) {
+                        print(output, out -> transcript.images(out, pasted.attached(), pasted.skipped()));
+                    }
                 }
                 if (reminder != null) {
                     reminder.startTurn();
@@ -694,15 +717,15 @@ public final class ChatLoop {
                 + "再调用工具也不会执行。请直接用文字说明已完成的工作、目前的发现，以及还剩哪些步骤；用户回复后可以接着做。";
     }
 
-    /** 附加到最后一条 user/tool 消息末尾，不新增消息角色、不改变协议顺序；消息没有文本时直接以附加内容开头。 */
+    /**
+     * 附加到最后一条 user/tool 消息末尾，不新增消息角色、不改变协议顺序；消息没有文本时直接以附加内容开头。
+     * 用户消息里的图片保留。
+     */
     private static void appendToLast(List<ChatMessage> request, String extra) {
         int last = request.size() - 1;
         ChatMessage message = request.get(last);
         String base = message.content() == null ? "" : message.content();
-        String content = base.isEmpty() ? extra : base + "\n\n" + extra;
-        request.set(last, "tool".equals(message.role())
-                ? ChatMessage.tool(message.toolCallId(), content)
-                : new ChatMessage(message.role(), content));
+        request.set(last, message.withContent(base.isEmpty() ? extra : base + "\n\n" + extra));
     }
 
     private void requeue(boolean toolsRecorded, List<String> unsavedScheduled, List<String> unsavedBackground) {

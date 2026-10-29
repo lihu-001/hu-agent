@@ -14,6 +14,7 @@ import dev.huagent.goal.GoalStarter;
 import dev.huagent.harness.AgentConsole;
 import dev.huagent.harness.EventHub;
 import dev.huagent.harness.HarnessOptions;
+import dev.huagent.harness.InputImages;
 import dev.huagent.harness.ModelRetryPolicy;
 import dev.huagent.harness.Transcript;
 import dev.huagent.harness.TurnInterrupt;
@@ -121,6 +122,11 @@ public final class HuMain {
             }
             IntSupplier columns = editor == null ? TerminalWidth.system() : editor::columns;
             PromptStyle prompt = promptStyle(console, config, columns, autoApprove);
+            Transcript transcript = transcript(console, debug);
+            if (editor != null) {
+                // 与 Claude Code 一样对话区不贴着终端最左列，长行折行后与正文对齐（见 Margin）；调试模式保持原样。
+                editor.margin(transcript.margin());
+            }
             // 补全要用会话装配出的注册表（含技能命令）。
             CommandStarter commands = (sources, warnings) -> {
                 CommandRegistry bound = CommandStarter.builtin(defaults, autoApprove).bind(sources, warnings);
@@ -128,7 +134,7 @@ public final class HuMain {
                 return bound;
             };
             run(config, input, output, debug, autoApprove, title == null ? prompt : title.prompt(prompt),
-                    confirmPrompt(console, debug), transcript(console, debug), splash(console, columns), commands,
+                    confirmPrompt(console, debug), transcript, splash(console, columns), commands,
                     editor != null, interrupt);
         } catch (IllegalArgumentException e) {
             failed = true;
@@ -169,9 +175,10 @@ public final class HuMain {
         events.addListener(agentConsole::notifyEvents);
         // 与 Claude Code 的环境信息和 CLAUDE.md 相同：会话开始时采集一次，模型从第一轮起就知道身处哪个项目。
         String projectContext = ProjectContext.render(config.workDirectory(), HuHome.resolve(), LocalDate.now());
+        // 终端粘贴截图或拖入图片时输入的是文件路径：InputImages 把它作为图片发给模型。
         HarnessOptions options = new HarnessOptions(events,
                 new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES), agentConsole.prompts(), debug, prompt,
-                confirm, autoApprove, interrupt, projectContext, transcript);
+                confirm, autoApprove, interrupt, projectContext, transcript, new InputImages());
         // 单 Agent 模式的确认在主线程上读这里；中断请求等回答读完再中断主线程（见 TurnInterrupt.answers）。
         BufferedReader answers = interrupt.answers(agentConsole.answers());
         TeamMain.Session session = TeamMain.createSession(config, client, answers, output,
@@ -190,7 +197,7 @@ public final class HuMain {
                 + (debug ? "调试模式已开启。" : ""));
         if (autoApprove.enabled()) {
             output.println("自动审批模式已开启：需要确认的工具调用（Shell、写文件、MCP 工具等）自动批准，"
-                    + "硬拒绝规则与工作目录检查仍然生效；/auto off 关闭。");
+                    + "硬拒绝规则与工作目录检查仍然生效；/auto off 关闭，hu --no-auto 启动时不开启。");
         }
         session.run();
     }
@@ -227,18 +234,22 @@ public final class HuMain {
         return console == null ? null : Splash.forTerminal(console.charset(), columns.getAsInt(), HuVersion.current());
     }
 
-    /** 启动会话的选项：-d / --debug 与 --auto 可以同时给出。 */
+    /** 启动会话的选项：-d / --debug 与 --auto / --no-auto 可以同时给出。 */
     record SessionFlags(boolean debug, boolean autoApprove) {
     }
 
-    /** 没有参数或只有会话选项时返回启动会话的选项；有其他参数时返回 null，交给 options。 */
+    /**
+     * 没有参数或只有会话选项时返回启动会话的选项；有其他参数时返回 null，交给 options。
+     * 默认开启自动审批模式，--no-auto 改为逐次确认；--auto 保留兼容，--auto 与 --no-auto 同时给出时以后一个为准。
+     */
     static SessionFlags sessionFlags(String[] args) {
         boolean debug = false;
-        boolean autoApprove = false;
+        boolean autoApprove = true;
         for (String arg : args) {
             switch (arg) {
                 case "-d", "--debug" -> debug = true;
                 case "--auto" -> autoApprove = true;
+                case "--no-auto" -> autoApprove = false;
                 default -> {
                     return null;
                 }
@@ -272,17 +283,19 @@ public final class HuMain {
         return """
                 用法：hu [选项]
                   在当前目录启动 hu-agent 交互会话；进入后输入 /help 查看命令，exit 退出。
-                      hu update [--local | --pkg <安装包>]
+                      hu update [--debug | -d] [--local | --pkg <安装包>]
                   更新到最新发布版（等同重新运行安装命令）；--local 在 hu-agent 源码目录中
                   构建并安装当前源码（需要 JDK 25）；--pkg 安装本地的 hu-agent.zip / hu-agent.tar.gz
                   或其所在目录，不联网。配置、授权记录和 Java 运行时都会保留。
+                  默认只显示更新状态；--debug / -d 显示详细构建、下载与安装日志。
 
                 选项：
                   -d, --debug      调试模式：显示每次模型请求与耗时、内置 Hook 日志、微压缩、
                                    中间回复、工具调用与完整工具结果；默认只显示对话与最终回答
-                      --auto       自动审批模式：需要确认的工具调用（Shell、写文件、
-                                   MCP 工具等）自动批准，硬拒绝规则与工作目录检查仍然生效；
-                                   会话中用 /auto 切换；可与 -d 同时使用
+                      --no-auto    关闭自动审批模式，需要确认的工具调用逐次询问。默认开启：
+                                   Shell、写文件、MCP 工具等自动批准，硬拒绝规则与工作目录
+                                   检查仍然生效；会话中用 /auto 切换；可与 -d 同时使用
+                      --auto       开启自动审批模式（默认已开启，保留兼容）
                   -h, --help       显示本帮助
                   -v, --version    显示版本
 

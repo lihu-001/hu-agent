@@ -16,7 +16,7 @@ public final class PermissionGate implements ToolPermission {
     private final BooleanSupplier asyncTurn;
     /** 确认提示的样式；hu 默认为 compact，其余构造器为 full，与之前相同。 */
     private final ConfirmPrompt confirm;
-    /** hu 的自动审批模式；为 null 或关闭时与之前相同。 */
+    /** hu 的自动审批模式；为 null 或关闭时与之前相同。非 null 时手动确认多一个选项 a：本次会话不再询问（见 SessionScope）。 */
     private final AutoApprove autoApprove;
 
     public PermissionGate(PermissionPolicy policy, BufferedReader input, PrintWriter output) {
@@ -60,18 +60,30 @@ public final class PermissionGate implements ToolPermission {
             }
             return null;
         }
+        // 用户之前回答过 a 的范围：与自动批准一样只显示一行记录，程序事件发起的轮次同样放行。
+        if (autoApprove != null && autoApprove.allowedInSession(call)) {
+            synchronized (output) {
+                confirm.allowed(output, decision.reason(), call, decision.preview(), null);
+                output.flush();
+            }
+            return null;
+        }
         if (asyncTurn != null && asyncTurn.getAsBoolean()) {
             return "本消息由程序事件自动发起，用户可能不在终端旁，交互确认被拒绝；"
                     + "需要执行时请在用户回来后请求批准。";
         }
         // 与 ChatLoop 共用同一个输入流；确认答案只由这里消费，不进入模型消息历史。
-        confirm.ask(output, decision.reason(), call, decision.preview(), "仅允许本次调用？");
+        String session = autoApprove == null ? null : SessionScope.of(call).label();
+        confirm.ask(output, decision.reason(), call, decision.preview(), "仅允许本次调用？", session);
         output.flush();
-        String answer = input.readLine();
-        if (answer == null) {
+        String line = input.readLine();
+        if (line == null) {
             return "确认输入已结束，未获得本次授权。";
         }
-        return "y".equalsIgnoreCase(answer.strip()) || "yes".equalsIgnoreCase(answer.strip())
-                ? null : "用户未批准本次调用。";
+        ConfirmPrompt.Answer answer = ConfirmPrompt.answer(line, session != null);
+        if (answer == ConfirmPrompt.Answer.SESSION) {
+            autoApprove.allowInSession(call);
+        }
+        return answer == ConfirmPrompt.Answer.DENY ? "用户未批准本次调用。" : null;
     }
 }

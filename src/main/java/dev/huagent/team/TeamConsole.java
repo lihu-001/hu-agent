@@ -41,15 +41,16 @@ public final class TeamConsole implements AutoCloseable {
     private record Wake() implements Event {
     }
 
-    private record Confirm(String member, String reason, ToolCall call, ChangePreview preview,
-                           CompletableFuture<Boolean> answer) implements Event {
+    /** session 非 null 时确认多一个选项 a（本次会话不再询问），是 SessionScope.label。 */
+    private record Confirm(String member, String reason, ToolCall call, ChangePreview preview, String session,
+                           CompletableFuture<ConfirmPrompt.Answer> answer) implements Event {
     }
 
     private final BlockingQueue<Event> events = new LinkedBlockingQueue<>();
     private final PrintWriter output;
     /** 正在等待用户回答时到达的确认请求，回到提示符时依次询问；只由主线程访问。 */
     private final Deque<Confirm> waiting = new ArrayDeque<>();
-    private final Set<CompletableFuture<Boolean>> open = ConcurrentHashMap.newKeySet();
+    private final Set<CompletableFuture<ConfirmPrompt.Answer>> open = ConcurrentHashMap.newKeySet();
     private volatile boolean closed;
     private boolean ended;
     /** 确认问答之后重画 Lead 的提示符，与 ChatLoop 使用同一样式。 */
@@ -108,19 +109,25 @@ public final class TeamConsole implements AutoCloseable {
     /** preview 是确认时显示的改动预览（见 ChangePreview），为 null 时只显示参数。 */
     public boolean confirm(String member, String reason, ToolCall call, ChangePreview preview)
             throws InterruptedException {
-        CompletableFuture<Boolean> answer = new CompletableFuture<>();
+        return confirm(member, reason, call, preview, null) != ConfirmPrompt.Answer.DENY;
+    }
+
+    /** session 非 null 时（hu 的手动确认）多一个选项 a：本次会话不再询问，由调用方记下放行范围。 */
+    public ConfirmPrompt.Answer confirm(String member, String reason, ToolCall call, ChangePreview preview,
+                                        String session) throws InterruptedException {
+        CompletableFuture<ConfirmPrompt.Answer> answer = new CompletableFuture<>();
         open.add(answer);
         try {
             if (closed) {
-                return false;
+                return ConfirmPrompt.Answer.DENY;
             }
-            events.add(new Confirm(member, reason, call, preview, answer));
+            events.add(new Confirm(member, reason, call, preview, session, answer));
             return answer.get();
         } catch (ExecutionException e) {
-            return false;
+            return ConfirmPrompt.Answer.DENY;
         } finally {
             // 被中断时作废请求，主线程取到后跳过，不再询问用户。
-            answer.complete(false);
+            answer.complete(ConfirmPrompt.Answer.DENY);
             open.remove(answer);
         }
     }
@@ -137,6 +144,14 @@ public final class TeamConsole implements AutoCloseable {
         }
     }
 
+    /** 队友线程调用：本次会话已放行的调用只显示一行记录，不排队、不等待回答。 */
+    public void allowed(String member, String reason, ToolCall call, ChangePreview preview) {
+        synchronized (output) {
+            confirmPrompt.allowed(output, reason, call, preview, member);
+            output.flush();
+        }
+    }
+
     /** 收件箱有新消息时调用（任意线程）；只是提示，消息本身仍在文件里。 */
     public void wake() {
         events.add(new Wake());
@@ -146,8 +161,8 @@ public final class TeamConsole implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
-        for (CompletableFuture<Boolean> answer : open) {
-            answer.complete(false);
+        for (CompletableFuture<ConfirmPrompt.Answer> answer : open) {
+            answer.complete(ConfirmPrompt.Answer.DENY);
         }
     }
 
@@ -221,13 +236,11 @@ public final class TeamConsole implements AutoCloseable {
         }
         synchronized (output) {
             confirmPrompt.ask(output, "[" + confirm.member() + "] " + confirm.reason(), confirm.call(),
-                    confirm.preview(), "允许队友 " + confirm.member() + " 本次调用？");
+                    confirm.preview(), "允许队友 " + confirm.member() + " 本次调用？", confirm.session());
             output.flush();
         }
-        String answer = nextAnswer();
-        String choice = answer == null ? "" : answer.strip();
-        boolean approved = choice.equalsIgnoreCase("y") || choice.equalsIgnoreCase("yes");
-        if (!confirm.answer().complete(approved)) {
+        ConfirmPrompt.Answer answer = ConfirmPrompt.answer(nextAnswer(), confirm.session() != null);
+        if (!confirm.answer().complete(answer)) {
             say("权限确认> [" + confirm.member() + "] 请求已失效（队友已停止），本次回答未使用。");
         }
     }

@@ -223,6 +223,20 @@ class AnthropicClientTest {
     }
 
     @Test
+    void sendsUserImagesAsBase64BlocksBeforeText() throws Exception {
+        client(root, false).complete(List.of(ChatMessage.user("看看这张图",
+                List.of(new ChatImage("image/png", "iVBORw0K"), new ChatImage("image/jpeg", "/9j/4AAQ")))), List.of());
+
+        assertEquals(JSONArray.of(
+                JSONObject.of("type", "image", "source", JSONObject.of("type", "base64",
+                        "media_type", "image/png", "data", "iVBORw0K")),
+                JSONObject.of("type", "image", "source", JSONObject.of("type", "base64",
+                        "media_type", "image/jpeg", "data", "/9j/4AAQ")),
+                JSONObject.of("type", "text", "text", "看看这张图")),
+                request.get().getJSONArray("messages").getJSONObject(0).getJSONArray("content"));
+    }
+
+    @Test
     void parsesTextAndToolUseBlocksAndReportsContextTokens() throws Exception {
         response = """
                 {"role":"assistant","stop_reason":"tool_use","content":[
