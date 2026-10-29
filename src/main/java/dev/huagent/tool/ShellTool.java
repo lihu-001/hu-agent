@@ -39,10 +39,14 @@ public final class ShellTool implements AgentTool {
                 """);
         return new ToolDefinition("shell",
                 "在 " + workDirectory + " 中执行命令。语法为 "
-                        + (windows ? "Windows PowerShell" : "POSIX /bin/sh")
+                        + (windows ? "Windows PowerShell 5.1：没有 && 和 ||，用 ; 分隔，需要前一条成功时写 "
+                        + "if ($?) { ... }；没有 grep、head、tail、cat，对应 Select-String、Select-Object -First/-Last、"
+                        + "Get-Content" : "POSIX /bin/sh")
                         + "。每次启动独立进程，cd 和变量不会跨调用保留。命令超时 "
                         + timeout.toSeconds() + " 秒，最多返回 " + maxOutputChars
-                        + " 个输出字符。工作目录不是沙箱，请只执行用户任务所需的命令。",
+                        + " 个输出字符，超出时保留开头和结尾。用于构建、测试、git 等命令；"
+                        + "查找文件、搜索内容和读文件改用 glob、grep、read_file，不要用 shell。"
+                        + "工作目录不是沙箱，请只执行用户任务所需的命令。",
                 parameters);
     }
 
@@ -131,20 +135,35 @@ public final class ShellTool implements AgentTool {
         process.destroyForcibly();
     }
 
+    /**
+     * 超过上限时保留开头约 2/5 和结尾约 3/5，中间换成一行说明：构建和测试的结论、报错通常在最后，
+     * 只保留开头会把它们截掉。
+     */
     private static final class BoundedOutput {
         private final int limit;
-        private final StringBuilder text = new StringBuilder();
-        private boolean truncated;
+        private final int headLimit;
+        private final int tailLimit;
+        private final StringBuilder head = new StringBuilder();
+        /** 开头之后的内容只保留最后 tailLimit 个字符；攒到两倍再裁剪，摊销删除的开销。 */
+        private final StringBuilder tail = new StringBuilder();
+        private long dropped;
         private boolean readFailed;
 
         private BoundedOutput(int limit) {
             this.limit = limit;
+            this.headLimit = limit * 2 / 5;
+            this.tailLimit = limit - headLimit;
         }
 
         private synchronized void append(char[] buffer, int count) {
-            int kept = Math.min(count, limit - text.length());
-            text.append(buffer, 0, kept);
-            truncated |= kept < count;
+            int kept = Math.min(count, headLimit - head.length());
+            head.append(buffer, 0, kept);
+            tail.append(buffer, kept, count - kept);
+            if (tail.length() > tailLimit * 2) {
+                int excess = tail.length() - tailLimit;
+                tail.delete(0, excess);
+                dropped += excess;
+            }
         }
 
         private synchronized void readFailed() {
@@ -152,8 +171,11 @@ public final class ShellTool implements AgentTool {
         }
 
         private synchronized String text() {
-            return text + (truncated ? "\n[输出已截断，上限 " + limit + " 字符]" : "")
-                    + (readFailed ? "\n[输出读取中断，结果可能不完整]" : "");
+            int excess = Math.max(0, tail.length() - tailLimit);
+            long omitted = dropped + excess;
+            return head + (omitted > 0 ? "\n[输出已截断：上限 " + limit + " 字符，省略了中间 " + omitted
+                    + " 个字符；需要完整输出时重定向到文件，再用 grep 或 read_file 查看]\n" : "")
+                    + tail.substring(excess) + (readFailed ? "\n[输出读取中断，结果可能不完整]" : "");
         }
     }
 }

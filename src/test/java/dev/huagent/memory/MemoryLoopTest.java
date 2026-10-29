@@ -46,7 +46,7 @@ class MemoryLoopTest {
     @Test
     void registersMemoryToolsAndPromptHasRuleWithoutIndexWhenEmpty() throws Exception {
         String output = run("x\nexit\n", script(new ChatMessage("assistant", "ok")));
-        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "todo_write", "task",
+        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "todo_write", "task",
                 "load_skill", "compact", "memory_read", "memory_write", "memory_delete"), toolNames.get(0));
         String system = requests.get(0).get(0).content();
         assertEquals(CompactMain.systemPrompt(SkillCatalog.empty()) + "\n\n" + MemoryMain.MEMORY_RULE, system);
@@ -133,7 +133,7 @@ class MemoryLoopTest {
                         JSON.toJSONString(Map.of("description", "看看", "prompt", "随便看看"))))),
                 new ChatMessage("assistant", "子代理总结"),
                 new ChatMessage("assistant", "完成")));
-        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "load_skill"),
+        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "load_skill"),
                 toolNames.get(1));
     }
 

@@ -8,6 +8,7 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -17,7 +18,11 @@ public final class PermissionPolicy {
         ALLOW, DENY, ASK
     }
 
-    public record Decision(Action action, String reason) {
+    /** preview 是确认时显示的改动预览（见 ChangePreview）；只有需要确认的写文件、编辑与多行命令才有，其余为 null。 */
+    public record Decision(Action action, String reason, ChangePreview preview) {
+        public Decision(Action action, String reason) {
+            this(action, reason, null);
+        }
     }
 
     private record DenyRule(Pattern pattern, String reason) {
@@ -65,6 +70,11 @@ public final class PermissionPolicy {
                 case "shell" -> shellDecision(requiredString(args, "command"));
                 case "read_file", "write_file", "edit_file" -> fileDecision(call.name(), args);
                 case "glob" -> new Decision(Action.ALLOW, "使用 S02 的工作目录内查找。");
+                // 与 read_file 相同只读；path 仍须在工作目录内，搜索不执行命令，不需要逐次确认。
+                case "grep" -> {
+                    files.resolve(args.get("path") instanceof String path && !path.isBlank() ? path : ".");
+                    yield new Decision(Action.ALLOW, "只读搜索工作目录内的文件。");
+                }
                 // S05：只替换会话内存中的任务清单，不接触文件或进程。
                 case "todo_write" -> new Decision(Action.ALLOW, "只更新会话内存中的任务清单。");
                 // S06：派发本身只发起模型请求；子代理的每次工具调用仍各自经过权限检查。
@@ -120,14 +130,32 @@ public final class PermissionPolicy {
                 return new Decision(Action.DENY, rule.reason());
             }
         }
-        return new Decision(Action.ASK, "Shell 以当前用户权限执行，可能修改文件或访问工作目录之外。");
+        return new Decision(Action.ASK, "Shell 以当前用户权限执行，可能修改文件或访问工作目录之外。",
+                ChangePreview.command(command));
     }
 
     private Decision fileDecision(String tool, JSONObject args) throws IOException {
-        files.resolve(requiredString(args, "path"));
+        String path = requiredString(args, "path");
+        Path file = files.resolve(path);
         return "read_file".equals(tool)
                 ? new Decision(Action.ALLOW, "读取工作目录内的文件。")
-                : new Decision(Action.ASK, "将写入或修改文件，请核对本次路径和内容。");
+                : new Decision(Action.ASK, "将写入或修改文件，请核对本次路径和内容。", preview(tool, path, file, args));
+    }
+
+    /** 只用于显示：参数不完整、文件过大或不是 UTF-8 时不生成预览，确认行退回显示参数。 */
+    private static ChangePreview preview(String tool, String path, Path file, JSONObject args) {
+        try {
+            String existing = ChangePreview.readText(file);
+            if ("write_file".equals(tool)) {
+                return args.get("content") instanceof String content ? ChangePreview.write(path, existing, content) : null;
+            }
+            return existing != null && args.get("old_text") instanceof String oldText
+                    && args.get("new_text") instanceof String newText
+                    ? ChangePreview.edit(path, existing, oldText, newText, Boolean.TRUE.equals(args.get("replace_all")))
+                    : null;
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
     }
 
     private String requiredString(JSONObject args, String key) {

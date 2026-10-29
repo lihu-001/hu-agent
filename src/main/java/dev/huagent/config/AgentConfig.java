@@ -19,6 +19,11 @@ public record AgentConfig(ModelConfig modelConfig, Path workDirectory,
                           int compactThresholdChars, int compactKeepToolResults, Duration backgroundTimeout,
                           int schedulerPollSeconds, boolean teamEnabled, int goalBlockCap,
                           String goalEvaluatorModel) {
+    /** 每轮模型调用上限只是防止失控的安全网（Claude Code 交互模式不设上限），正常任务碰不到。 */
+    public static final int DEFAULT_MAX_MODEL_CALLS = 200;
+    /** 与 Claude Code 的 Bash 输出上限相同。 */
+    public static final int DEFAULT_MAX_OUTPUT_CHARS = 30000;
+    /** 教程各阶段的压缩阈值；hu 没有配置时按模型最大上下文换算，见 defaultCompactThreshold。 */
     public static final int DEFAULT_COMPACT_THRESHOLD_CHARS = 50000;
     public static final int DEFAULT_COMPACT_KEEP_TOOL_RESULTS = 3;
     public static final int DEFAULT_BACKGROUND_TIMEOUT_SECONDS = 600;
@@ -141,13 +146,22 @@ public record AgentConfig(ModelConfig modelConfig, Path workDirectory,
         return properties != null && StrUtil.isNotBlank(properties.getProperty("openai.model"));
     }
 
+    /**
+     * 与 Claude Code 一样接近上下文上限才自动总结：阈值是粗略字符数，按约 1.2 字符/token 换算模型最大上下文
+     * （中文多时一个 token 约 1.5 字符，仍留有余量；估计偏差导致超长时由响应式压缩兜底），不低于教程默认值。
+     */
+    static int defaultCompactThreshold(int maxContextTokens) {
+        return (int) Math.min(Integer.MAX_VALUE,
+                Math.max(DEFAULT_COMPACT_THRESHOLD_CHARS, maxContextTokens * 6L / 5));
+    }
+
     private static AgentConfig from(Properties properties, ModelConfig model) {
         return new AgentConfig(model,
                 Path.of(required(properties, "agent.work-dir", ".", HuHome.CONFIG_FILE)),
-                positiveInt(properties, "agent.max-model-calls", 10),
+                positiveInt(properties, "agent.max-model-calls", DEFAULT_MAX_MODEL_CALLS),
                 Duration.ofSeconds(positiveInt(properties, "shell.timeout-seconds", 30)),
-                positiveInt(properties, "shell.max-output-chars", 12000),
-                positiveInt(properties, "compact.threshold-chars", DEFAULT_COMPACT_THRESHOLD_CHARS),
+                positiveInt(properties, "shell.max-output-chars", DEFAULT_MAX_OUTPUT_CHARS),
+                positiveInt(properties, "compact.threshold-chars", defaultCompactThreshold(model.maxContextTokens())),
                 positiveInt(properties, "compact.keep-tool-results", DEFAULT_COMPACT_KEEP_TOOL_RESULTS),
                 Duration.ofSeconds(positiveInt(properties, "background.timeout-seconds",
                         DEFAULT_BACKGROUND_TIMEOUT_SECONDS)),

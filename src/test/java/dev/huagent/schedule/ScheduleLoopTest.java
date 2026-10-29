@@ -57,7 +57,7 @@ class ScheduleLoopTest {
         run("x\nexit\n", script(new ChatMessage("assistant", "ok")));
         List<String> names = toolNames.get(0);
         assertEquals(ScheduleTools.NAMES, names.subList(names.size() - ScheduleTools.NAMES.size(), names.size()));
-        assertEquals(26, names.size());
+        assertEquals(27, names.size());
         assertEquals(BackgroundMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n"
                         + ScheduleMain.SCHEDULE_RULE,
                 requests.get(0).get(0).content());
@@ -109,7 +109,7 @@ class ScheduleLoopTest {
                 ChatMessage.assistant(null, List.of(call("t1", "task", Map.of("description", "看看", "prompt", "随便看看")))),
                 new ChatMessage("assistant", "子代理总结"),
                 new ChatMessage("assistant", "完成")));
-        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "load_skill"),
+        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "load_skill"),
                 toolNames.get(1));
     }
 

@@ -27,8 +27,20 @@ class ContextCompactorTest {
     private final PrintWriter output = new PrintWriter(buffer);
 
     @Test
-    void belowThresholdOnlyMicroCompactsTheRequest() throws Exception {
+    void belowHalfTheThresholdSendsEveryToolResultAsIs() throws Exception {
+        // 三组工具调用约 966 字符，远低于阈值的一半：与 Claude Code 一样上下文宽裕时不清理工具结果。
         ContextCompactor compactor = compactor((m, t) -> fail("不应请求总结"), 100000, 1, null);
+        List<ChatMessage> history = toolHistory(3);
+        ContextCompactor.Prepared prepared = compactor.beforeRequest(history, output);
+        assertFalse(prepared.summarized());
+        assertSame(history, prepared.sent());
+        assertEquals("", buffer.toString());
+        assertEquals(966, compactor.contextSize(history));
+    }
+
+    @Test
+    void aboveHalfTheThresholdOnlyMicroCompactsTheRequest() throws Exception {
+        ContextCompactor compactor = compactor((m, t) -> fail("不应请求总结"), 1500, 1, null);
         List<ChatMessage> history = toolHistory(3);
         ContextCompactor.Prepared prepared = compactor.beforeRequest(history, output);
         assertFalse(prepared.summarized());
@@ -216,7 +228,7 @@ class ContextCompactorTest {
     @Test
     void nonDebugMicroCompactsSilently() throws Exception {
         ContextCompactor compactor = new ContextCompactor((m, t) -> fail("不应请求总结"),
-                new TranscriptStore(root.resolve(TranscriptStore.DIRECTORY_NAME)), root, 100000, 1, null, false);
+                new TranscriptStore(root.resolve(TranscriptStore.DIRECTORY_NAME)), root, 1500, 1, null, false);
         ContextCompactor.Prepared prepared = compactor.beforeRequest(toolHistory(3), output);
         assertEquals(2, prepared.sent().stream().filter(m -> m.content() != null
                 && m.content().startsWith(MicroCompact.PLACEHOLDER_PREFIX)).count(), "发送内容照常微压缩");

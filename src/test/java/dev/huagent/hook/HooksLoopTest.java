@@ -36,7 +36,7 @@ class HooksLoopTest {
         List<List<ChatMessage>> requests = new ArrayList<>();
         String output = run("执行\nn\ny\n下一步\nexit\n", (messages, definitions) -> {
             requests.add(messages);
-            assertEquals(5, definitions.size());
+            assertEquals(6, definitions.size());
             return requests.size() == 1 ? ChatMessage.assistant(null, List.of(
                     call("blocked", "write_file", Map.of("path", "blocked.txt", "content", "x")),
                     call("denied", "write_file", Map.of("path", "denied.txt", "content", "x")),
@@ -60,7 +60,7 @@ class HooksLoopTest {
                 results.stream().map(ChatMessage::toolCallId).toList());
         assertTrue(results.get(0).content().startsWith("钩子拒绝"));
         assertTrue(results.get(1).content().startsWith("权限拒绝"));
-        assertEquals("中文", results.get(3).content());
+        assertEquals("     1\t中文", results.get(3).content());
         assertTrue(results.get(4).content().startsWith("权限拒绝"));
         assertTrue(results.get(5).content().startsWith("权限拒绝"));
         assertTrue(results.get(6).content().startsWith("权限拒绝"));

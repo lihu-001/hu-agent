@@ -84,7 +84,8 @@ public final class GlobTool implements AgentTool {
                 + (omitted[0] ? "\n[匹配项已截断，上限 200 条，请缩小 pattern 范围]" : "");
     }
 
-    private List<PathMatcher> compile(String pattern) {
+    /** 按 / 拆成逐段的匹配器，独立的 ** 记为 null；grep 的 glob 过滤也用它。 */
+    static List<PathMatcher> compile(String pattern) {
         if (pattern.startsWith("/") || pattern.contains("\\") || pattern.contains(":")) {
             throw new IllegalArgumentException("pattern 必须使用工作目录内的相对路径和 / 分隔符。");
         }
@@ -102,7 +103,7 @@ public final class GlobTool implements AgentTool {
         return matchers;
     }
 
-    private boolean matches(Path path, List<PathMatcher> matchers) {
+    static boolean matches(Path path, List<PathMatcher> matchers) {
         // 按路径段匹配，使 **/ 同时支持零层目录（JDK 的整路径 glob 不提供此语义）。
         boolean[] previous = new boolean[path.getNameCount() + 1];
         previous[0] = true;

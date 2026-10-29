@@ -40,7 +40,7 @@ class FileToolsTest {
     @Test
     void writesReadsAndOverwritesUtf8IncludingEmptyContent() throws Exception {
         assertTrue(call("write_file", Map.of("path", "目录/中文.txt", "content", "你好")).contains("6 字节"));
-        assertEquals("你好", call("read_file", Map.of("path", "目录/中文.txt")));
+        assertEquals("     1\t你好", call("read_file", Map.of("path", "目录/中文.txt")));
         assertEquals("你好", Files.readString(root.resolve("目录/中文.txt")));
         call("write_file", Map.of("path", "目录/中文.txt", "content", ""));
         assertEquals("", Files.readString(root.resolve("目录/中文.txt")));
@@ -48,12 +48,26 @@ class FileToolsTest {
     }
 
     @Test
-    void editsFirstLiteralOccurrenceAndPreservesLineEndings() throws Exception {
+    void editRequiresUniqueLiteralMatchUnlessReplaceAllAndPreservesLineEndings() throws Exception {
+        call("write_file", Map.of("path", "edit.txt", "content", "a.$\r\na.$\r\nb\r\n"));
+        String ambiguous = call("edit_file", Map.of("path", "edit.txt", "old_text", "a.$", "new_text", "中文"));
+        assertTrue(ambiguous.startsWith("工具错误：old_text 在文件中出现了 2 次"), ambiguous);
+        assertEquals("a.$\r\na.$\r\nb\r\n", Files.readString(root.resolve("edit.txt")), "不唯一时不修改");
+        assertEquals("已编辑 edit.txt。",
+                call("edit_file", Map.of("path", "edit.txt", "old_text", "a.$\r\nb", "new_text", "中文")));
+        assertEquals("a.$\r\n中文\r\n", Files.readString(root.resolve("edit.txt")));
         call("write_file", Map.of("path", "edit.txt", "content", "a.$\r\na.$\r\n"));
-        call("edit_file", Map.of("path", "edit.txt", "old_text", "a.$", "new_text", "中文"));
-        assertEquals("中文\r\na.$\r\n", Files.readString(root.resolve("edit.txt")));
-        call("edit_file", Map.of("path", "edit.txt", "old_text", "中文", "new_text", ""));
-        assertEquals("\r\na.$\r\n", Files.readString(root.resolve("edit.txt")));
+        assertEquals("已编辑 edit.txt（替换了 2 处）。", call("edit_file",
+                Map.of("path", "edit.txt", "old_text", "a.$", "new_text", "", "replace_all", true)));
+        assertEquals("\r\n\r\n", Files.readString(root.resolve("edit.txt")));
+    }
+
+    @Test
+    void editHintsWhenOldTextCarriesReadFileLineNumbers() throws Exception {
+        call("write_file", Map.of("path", "edit.txt", "content", "first\nsecond\n"));
+        String result = call("edit_file", Map.of("path", "edit.txt", "old_text", "     2\tsecond", "new_text", "x"));
+        assertTrue(result.startsWith("工具错误：未找到 old_text") && result.contains("行号前缀"), result);
+        assertEquals("first\nsecond\n", Files.readString(root.resolve("edit.txt")));
     }
 
     @Test
@@ -70,17 +84,35 @@ class FileToolsTest {
     void whitespaceIsAValidEditTarget() throws Exception {
         call("write_file", Map.of("path", "edit.txt", "content", "a b"));
         call("edit_file", Map.of("path", "edit.txt", "old_text", " ", "new_text", ""));
-        assertEquals("ab", call("read_file", Map.of("path", "edit.txt")));
+        assertEquals("     1\tab", call("read_file", Map.of("path", "edit.txt")));
     }
 
     @Test
-    void limitsLinesAndCharactersWithoutMisreportingAnEmptyFirstLine() throws Exception {
+    void readsWithLineNumbersOffsetAndLimitWithoutMisreportingAnEmptyFirstLine() throws Exception {
         call("write_file", Map.of("path", "read.txt", "content", "\n第二行\n第三行\n"));
-        assertEquals("\n[还有 2 行未显示]", call("read_file", Map.of("path", "read.txt", "limit", 1)));
-        assertEquals("\n第二行\n第三行\n", call("read_file", Map.of("path", "read.txt")));
-        call("write_file", Map.of("path", "read.txt", "content", "字".repeat(12001)));
+        assertEquals("     1\t\n[已显示第 1–1 行，共 3 行；用 offset=2 继续读取]",
+                call("read_file", Map.of("path", "read.txt", "limit", 1)));
+        assertEquals("     1\t\n     2\t第二行\n     3\t第三行", call("read_file", Map.of("path", "read.txt")));
+        assertEquals("     2\t第二行\n[已显示第 2–2 行，共 3 行；用 offset=3 继续读取]",
+                call("read_file", Map.of("path", "read.txt", "offset", 2, "limit", 1)));
+        assertEquals("     3\t第三行", call("read_file", Map.of("path", "read.txt", "offset", 3)));
+        assertEquals("工具错误：offset 超出范围：文件共 3 行。",
+                call("read_file", Map.of("path", "read.txt", "offset", 4)));
+    }
+
+    @Test
+    void truncatesAtWholeLinesAndSaysWhereToContinue() throws Exception {
+        // 每行显示为 1007 字符（行号 6 + 制表符 + 1000），60000 字符放得下 59 行。
+        String line = "字".repeat(1000);
+        call("write_file", Map.of("path", "read.txt", "content", (line + "\n").repeat(100)));
         String result = call("read_file", Map.of("path", "read.txt"));
-        assertTrue(result.startsWith("字".repeat(12000) + "\n[输出已截断"));
+        assertTrue(result.endsWith("\n[已显示第 1–59 行，共 100 行；用 offset=60 继续读取]"),
+                result.substring(result.length() - 60));
+        assertEquals(59, result.lines().filter(text -> text.endsWith(line)).count());
+        assertTrue(call("read_file", Map.of("path", "read.txt", "offset", 60)).startsWith("    60\t" + line));
+        call("write_file", Map.of("path", "long.txt", "content", "x".repeat(3000)));
+        assertEquals("     1\t" + "x".repeat(2000) + "…（本行共 3000 字符，已截断）",
+                call("read_file", Map.of("path", "long.txt")));
     }
 
     @ParameterizedTest
@@ -88,7 +120,7 @@ class FileToolsTest {
             "{\"path\":\"x\",\"extra\":1}", "{\"path\":\"x\",\"limit\":0}",
             "{\"path\":\"x\",\"limit\":-1}", "{\"path\":\"x\",\"limit\":1.5}",
             "{\"path\":\"x\",\"limit\":\"2\"}", "{\"path\":\"x\",\"limit\":null}",
-            "{\"path\":\"x\",\"limit\":2147483648}"})
+            "{\"path\":\"x\",\"limit\":2147483648}", "{\"path\":\"x\",\"offset\":0}"})
     void invalidReadArgumentsReturnErrors(String arguments) throws Exception {
         assertTrue(tools.execute(new ToolCall("bad", "read_file", arguments)).startsWith("工具错误"));
     }
@@ -152,7 +184,7 @@ class FileToolsTest {
     void permitsAbsolutePathsInsideWorkspace() throws Exception {
         String path = root.resolve("inside.txt").toString();
         call("write_file", Map.of("path", path, "content", "ok"));
-        assertEquals("ok", call("read_file", Map.of("path", path)));
+        assertEquals("     1\tok", call("read_file", Map.of("path", path)));
     }
 
     @Test
@@ -237,7 +269,7 @@ class FileToolsTest {
         process.getInputStream().readAllBytes();
         assertEquals(0, process.waitFor(), "创建临时目录 junction 应成功");
         try {
-            assertEquals("ok", call("read_file", Map.of("path", link.resolve("inside.txt").toString())));
+            assertEquals("     1\tok", call("read_file", Map.of("path", link.resolve("inside.txt").toString())));
             call("write_file", Map.of("path", link.resolve("new/file.txt").toString(), "content", "new"));
             assertEquals("new", Files.readString(root.resolve("new/file.txt")));
         } finally {

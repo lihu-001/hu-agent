@@ -48,7 +48,7 @@ class CompactLoopTest {
     @Test
     void registersCompactToolAndMentionsItInSystemPrompt() throws Exception {
         run("x\nexit\n", 100000, 3, (messages, tools) -> {
-            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob",
+            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep",
                     "todo_write", "task", "load_skill", "compact"), tools.stream().map(ToolDefinition::name).toList());
             assertTrue(messages.get(0).content().contains(CompactMain.COMPACT_RULE));
             return new ChatMessage("assistant", "ok");
@@ -58,7 +58,8 @@ class CompactLoopTest {
     @Test
     void microCompactAffectsRequestButNextTurnStillHasOriginalInHistory() throws Exception {
         // 第一轮读两次大文件，第二轮直接回答；保留最近 1 个工具结果。
-        String output = run("读两次\n再问\nexit\n", 100000, 1, script(
+        // 阈值 1200：第三次请求时对话约 870 字符，超过阈值一半才微压缩，又不到阈值，不会总结。
+        String output = run("读两次\n再问\nexit\n", 1200, 1, script(
                 ChatMessage.assistant(null, List.of(read("r1"))),
                 ChatMessage.assistant(null, List.of(read("r2"))),
                 new ChatMessage("assistant", "读完"),

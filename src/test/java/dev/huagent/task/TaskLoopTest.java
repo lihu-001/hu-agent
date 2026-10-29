@@ -46,7 +46,7 @@ class TaskLoopTest {
     @Test
     void registersTaskToolsAndPromptAddsTaskRule() throws Exception {
         String output = run("x\nexit\n", script(new ChatMessage("assistant", "ok")));
-        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "todo_write", "task",
+        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "todo_write", "task",
                 "load_skill", "compact", "memory_read", "memory_write", "memory_delete", "task_create",
                 "task_update", "task_list", "task_get", "task_claim", "task_complete"), toolNames.get(0));
         assertEquals(MemoryMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n" + TaskMain.TASK_RULE,
@@ -138,7 +138,7 @@ class TaskLoopTest {
                 ChatMessage.assistant(null, List.of(call("t1", "task", Map.of("description", "看看", "prompt", "随便看看")))),
                 new ChatMessage("assistant", "子代理总结"),
                 new ChatMessage("assistant", "完成")));
-        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "load_skill"),
+        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "load_skill"),
                 toolNames.get(1));
     }
 

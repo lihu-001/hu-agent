@@ -9,14 +9,25 @@ import com.alibaba.fastjson2.JSONObject;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 /** OpenAI 与 Anthropic 两种协议的客户端共用：基础地址与 api-key 校验、HTTP 失败分类、模型列表解析。 */
 final class ModelHttp {
+    /** 建立连接最多等这么久：请求超时可以很长（模型生成慢），连不上的地址仍应很快报错。 */
+    static final Duration MAX_CONNECT_TIMEOUT = Duration.ofSeconds(30);
+
     private ModelHttp() {
+    }
+
+    /** 两种协议的客户端共用的 HttpClient：连接超时取请求超时与 MAX_CONNECT_TIMEOUT 中较小的。 */
+    static HttpClient httpClient(Duration timeout) {
+        Duration connect = timeout.compareTo(MAX_CONNECT_TIMEOUT) < 0 ? timeout : MAX_CONNECT_TIMEOUT;
+        return HttpClient.newBuilder().connectTimeout(connect).build();
     }
 
     /** 模型列表响应：两种协议都是 {"data": [{"id": …}, …]}，Anthropic 另有分页字段。 */

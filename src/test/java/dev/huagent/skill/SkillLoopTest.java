@@ -48,7 +48,7 @@ class SkillLoopTest {
         List<List<ChatMessage>> requests = new ArrayList<>();
         List<String> events = new ArrayList<>();
         String output = run("打个招呼\nexit\n", (messages, definitions) -> {
-            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob",
+            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep",
                     "todo_write", "task", "load_skill"), definitions.stream().map(ToolDefinition::name).toList());
             requests.add(messages);
             return requests.size() == 1 ? ChatMessage.assistant(null, List.of(load("s1", "greet")))
@@ -106,7 +106,7 @@ class SkillLoopTest {
         run("派发\nexit\n", (messages, definitions) -> {
             List<String> names = definitions.stream().map(ToolDefinition::name).toList();
             if (messages.get(0).content().startsWith(SubagentMain.SUBAGENT_PROMPT)) {
-                assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "load_skill"), names);
+                assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "load_skill"), names);
                 assertTrue(messages.get(0).content().contains("- greet："));
                 child.add(messages);
                 return child.size() == 1 ? ChatMessage.assistant(null, List.of(load("c", "greet")))

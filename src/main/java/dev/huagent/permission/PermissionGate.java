@@ -55,7 +55,7 @@ public final class PermissionGate implements ToolPermission {
         // 自动审批：不读终端，程序事件发起的轮次同样放行；硬拒绝已在上面返回。
         if (autoApprove != null && autoApprove.enabled()) {
             synchronized (output) {
-                confirm.approved(output, decision.reason(), call, null);
+                confirm.approved(output, decision.reason(), call, decision.preview(), null);
                 output.flush();
             }
             return null;
@@ -65,7 +65,7 @@ public final class PermissionGate implements ToolPermission {
                     + "需要执行时请在用户回来后请求批准。";
         }
         // 与 ChatLoop 共用同一个输入流；确认答案只由这里消费，不进入模型消息历史。
-        confirm.ask(output, decision.reason(), call, "仅允许本次调用？");
+        confirm.ask(output, decision.reason(), call, decision.preview(), "仅允许本次调用？");
         output.flush();
         String answer = input.readLine();
         if (answer == null) {

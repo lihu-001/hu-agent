@@ -76,7 +76,7 @@ class GoalLoopTest {
     @Test
     void goalRuleAppendedWithoutNewToolsAndPlainTurnsAreNotJudged() throws Exception {
         String output = run("你好\nexit\n", 6, 8, script(i -> text("你好"), j -> fail("没有目标时不应判断")));
-        assertEquals(31, toolNames.get(0).size(), "本课不新增工具：" + toolNames.get(0));
+        assertEquals(32, toolNames.get(0).size(), "本课不新增工具：" + toolNames.get(0));
         assertEquals(ScheduleMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n" + WorkflowTools.RULE
                 + "\n\n" + GoalController.RULE, mainRequests.get(0).get(0).content());
         assertTrue(judgeRequests.isEmpty());

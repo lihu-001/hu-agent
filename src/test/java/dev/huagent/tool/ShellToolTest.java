@@ -69,6 +69,18 @@ class ShellToolTest {
     }
 
     @Test
+    void truncationKeepsBothHeadAndTail() {
+        // 构建和测试的结论在最后：截断时开头和结尾都要保留。
+        String command = windows ? "[Console]::Write('BEGIN' + ('x' * 50000) + 'END')"
+                : "printf BEGIN; i=0; while [ \"$i\" -lt 5000 ]; do printf xxxxxxxxxx; i=$((i+1)); done; printf END";
+        String result = assertTimeoutPreemptively(Duration.ofSeconds(15),
+                () -> shell(Duration.ofSeconds(10), 1000).execute(arguments(command)));
+        assertTrue(result.startsWith("退出码：0\nBEGIN"), result);
+        assertTrue(result.endsWith("xEND"), result);
+        assertTrue(result.contains("[输出已截断：上限 1000 字符，省略了中间 49008 个字符；"), result);
+    }
+
+    @Test
     void timesOutAndStopsTheCommand() {
         String command = windows ? "Start-Sleep -Seconds 20; Set-Content late.txt done"
                 : "sleep 20; printf done > late.txt";

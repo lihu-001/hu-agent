@@ -38,6 +38,11 @@
             <source>src/main/resources/hu-agent/config.example.properties</source>
             <outputDirectory/>
         </file>
+        <!-- 改编自 opencode 与 oh-my-pi 的提示词随 jar 发布，MIT 要求附上它们的版权与许可声明。 -->
+        <file>
+            <source>THIRD_PARTY_NOTICES.md</source>
+            <outputDirectory/>
+        </file>
         <!-- 安装脚本随包安装到 app/，供 hu update 的 pkg 选项离线使用。 -->
         <file>
             <source>install.sh</source>

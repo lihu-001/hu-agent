@@ -30,7 +30,8 @@ class PermissionGateAutoApproveTest {
         assertNull(gate.denialReason(new ToolCall("call_2", "shell", "{\"command\":\"mvn test\"}")));
 
         String n = System.lineSeparator();
-        assertEquals("【自动批准】write_file：{\"path\":\"a.txt\",\"content\":\"内容\"}" + n
+        // 写文件显示路径与改动预览，自动批准的改动也看得到改了什么；单行命令照常一行。
+        assertEquals("【自动批准】write_file：a.txt（新建，1 行）" + n + "      1 + 内容" + n
                 + "【自动批准】shell：mvn test" + n, shown.toString());
     }
 

@@ -16,7 +16,7 @@ import java.util.function.Supplier;
 
 /**
  * 每次请求模型前整理上下文，三层：
- * 1. 微压缩：较早的长工具结果换成占位说明，只影响本次发送的内容，不请求模型；
+ * 1. 微压缩：对话超过阈值一半后，较早的长工具结果换成占位说明，只影响本次发送的内容，不请求模型；
  * 2. 自动压缩：微压缩后对话（不含系统提示词）的粗略字符数仍超过阈值时，先保存完整记录，再请模型总结，历史换成“系统提示词 + 摘要”；
  * 3. 手动压缩：模型调用 compact 后，在本批工具结果补齐、下一次请求前执行同样的总结。
  * 总结请求不带工具，不计入每轮模型调用上限，也不经过 Hook。
@@ -67,7 +67,16 @@ public final class ContextCompactor {
 
     /** 与阈值比较的同一口径：微压缩之后、不含系统提示词的粗略字符数；/context 用它显示用量。 */
     public int contextSize(List<ChatMessage> history) {
-        return conversationSize(MicroCompact.apply(history, keepRecentToolResults));
+        return conversationSize(micro(history));
+    }
+
+    /**
+     * 微压缩只在对话超过阈值一半后启用（与 Claude Code 一样，上下文宽裕时不清理工具结果）：
+     * 否则模型几步之前看过的搜索和文件内容就被换成占位说明，只能反复重新调用工具。
+     */
+    private List<ChatMessage> micro(List<ChatMessage> history) {
+        return conversationSize(history) > thresholdChars / 2
+                ? MicroCompact.apply(history, keepRecentToolResults) : history;
     }
 
     /** compact 工具只登记请求，等本批工具结果都补齐后再总结，避免打断 tool_call 协议。 */
@@ -97,7 +106,7 @@ public final class ContextCompactor {
      */
     public Prepared beforeRequest(List<ChatMessage> history, PrintWriter output, boolean force)
             throws InterruptedException {
-        List<ChatMessage> micro = MicroCompact.apply(history, keepRecentToolResults);
+        List<ChatMessage> micro = micro(history);
         int replaced = 0;
         for (int i = 0; i < micro.size(); i++) {
             if (micro.get(i) != history.get(i)) {

@@ -33,10 +33,10 @@ class AgentConfigTest {
         AgentConfig config = AgentConfig.load(write("openai.model=test-model\nopenai.api-key=test-secret\n"));
         assertEquals("https://api.openai.com/v1", config.baseUrl());
         assertEquals(Path.of("."), config.workDirectory());
-        assertEquals(10, config.maxModelCalls());
+        assertEquals(200, config.maxModelCalls());
         assertEquals(30, config.shellTimeout().toSeconds());
-        assertEquals(12000, config.maxOutputChars());
-        assertEquals(50000, config.compactThresholdChars());
+        assertEquals(30000, config.maxOutputChars());
+        assertEquals(1_200_000, config.compactThresholdChars(), "按默认最大上下文 100 万 token 换算");
         assertEquals(3, config.compactKeepToolResults());
         assertEquals(600, config.backgroundTimeout().toSeconds());
         assertEquals(15, config.schedulerPollSeconds());
@@ -207,7 +207,18 @@ class AgentConfigTest {
         assertTrue(AgentConfig.modelConfigured(missing, modelFile, Map.of()));
         AgentConfig fresh = AgentConfig.load(missing, modelFile, Map.of());
         assertEquals("new", fresh.model());
-        assertEquals(10, fresh.maxModelCalls(), "config.properties 缺失时其他设置取默认值");
+        assertEquals(200, fresh.maxModelCalls(), "config.properties 缺失时其他设置取默认值");
+    }
+
+    @Test
+    void defaultCompactThresholdFollowsModelContextButNotBelowTutorialDefault() throws IOException {
+        assertEquals(240_000, AgentConfig.defaultCompactThreshold(200_000));
+        assertEquals(AgentConfig.DEFAULT_COMPACT_THRESHOLD_CHARS, AgentConfig.defaultCompactThreshold(32_000));
+        Path modelFile = directory.resolve("small-model.properties");
+        Files.writeString(modelFile, "provider=openai\nmodel=m\napi-key=k\nmax-context-tokens=128000\n");
+        assertEquals(153_600, AgentConfig.load(write(""), modelFile, Map.of()).compactThresholdChars());
+        assertEquals(70_000, AgentConfig.load(write("compact.threshold-chars=70000\n"), modelFile, Map.of())
+                .compactThresholdChars(), "配置了就用配置的值");
     }
 
     @Test

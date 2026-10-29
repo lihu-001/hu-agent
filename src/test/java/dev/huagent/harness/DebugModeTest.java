@@ -50,17 +50,22 @@ class DebugModeTest {
     }
 
     @Test
-    void defaultShowsOnlyFinalAnswerButModelGetsFullResult() throws Exception {
+    void defaultShowsRepliesAndOneLinePerToolCallButModelGetsFullResult() throws Exception {
         String output = run(false);
         for (String detail : List.of("技能> 已加载", "记忆> 已加载", "任务> .tasks", "工作流> .workflows", "计划> 已加载",
-                "对话已启动", "工具> read_file", "工具请求>", "工具结果>", "第 1 行", "先读一下", "模型请求>", "模型响应>",
+                "对话已启动", "工具> read_file：", "工具请求>", "工具结果>", "第 1 行", "模型请求>", "模型响应>",
                 "钩子 ", "[r1]")) {
             assertFalse(output.contains(detail), detail + "\n" + output);
         }
-        assertTrue(output.contains("助手> 读完了"), output);
+        // 与 Claude Code 相同：中间说明、每次工具调用的一行摘要和最终回答依次显示。
+        int intent = output.indexOf("助手> 先读一下");
+        int tool = output.indexOf("工具> read_file notes.txt · 10 行");
+        int answer = output.indexOf("助手> 读完了");
+        assertTrue(intent >= 0 && intent < tool && tool < answer, output);
         ChatMessage result = requests.get(1).get(requests.get(1).size() - 1);
         assertEquals("r1", result.toolCallId());
-        assertTrue(result.content().startsWith(FILE), "模型收到完整结果");
+        assertTrue(result.content().startsWith("     1\t第 1 行\n") && result.content().endsWith("    10\t第 10 行"),
+                "模型收到完整结果");
     }
 
     @Test
@@ -69,7 +74,7 @@ class DebugModeTest {
         for (String detail : List.of("技能> 已加载", "工作流> .workflows 中有 0 个工作流", "计划> 已加载 0 个计划",
                 "对话已启动", "工具> read_file：", "模型请求> 第 1 次请求中",
                 "模型响应> 耗时", "钩子 PreToolUse> read_file [r1]", "助手> 先读一下", "工具请求> read_file [r1]",
-                "工具结果> [r1] " + FILE)) {
+                "工具结果> [r1]      1\t第 1 行")) {
             assertTrue(output.contains(detail), detail + "\n" + output);
         }
     }

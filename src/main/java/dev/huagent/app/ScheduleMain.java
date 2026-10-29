@@ -230,8 +230,10 @@ public final class ScheduleMain {
                         options.events()::inSyntheticTurn, options.confirm(), options.autoApprove());
         // 子代理与 S11 相同：没有后台工具，也没有定时计划，不会在无人接收的情况下产生输出。
         ToolRegistry childTools = ToolUseMain.createTools(config, gate, hooks, List.of(new LoadSkillTool(catalog)));
+        // hu 的项目上下文（环境、git 状态、AGENTS.md）主 Agent 与子代理都附加；其余入口为空串。
+        String contextSuffix = HarnessOptions.contextSuffix(options);
         SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
-                SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), output, debug);
+                SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog) + contextSuffix, output, debug);
         // S16：工作流步骤复用同一个子代理运行器；null 时与 S15 完全相同。
         WorkflowBinding workflow = workflows == null ? null : workflows.bind(runner, output, debug);
         TranscriptStore transcripts = new TranscriptStore(files.root().resolve(TranscriptStore.DIRECTORY_NAME));
@@ -282,9 +284,10 @@ public final class ScheduleMain {
                         systemPrompt(catalog, entries) + mcp.promptSuffix() + workflowSuffix + goalSuffix, hooks,
                         new TodoReminder(todos), compactor, background, null, null, goal, slash)
                 : new ChatLoop(client, registry, config.maxModelCalls(),
-                        systemPrompt(catalog, entries, true) + mcp.promptSuffix() + workflowSuffix + goalSuffix,
+                        systemPrompt(catalog, entries, true) + mcp.promptSuffix() + workflowSuffix + goalSuffix
+                                + contextSuffix,
                         hooks, new TodoReminder(todos), compactor, background, options.events(), options.retry(),
-                        goal, slash, options.debug(), options.prompt(), options.interrupt());
+                        goal, slash, options.debug(), options.prompt(), options.interrupt(), options.transcript());
         if (startScheduler) {
             scheduleManager.start(debug);
         }

@@ -13,7 +13,7 @@ import java.nio.file.Path;
  */
 public final class WorkspaceFiles {
     public static final int MAX_FILE_BYTES = 1024 * 1024;
-    public static final int MAX_READ_CHARS = 12000;
+    public static final int MAX_READ_CHARS = 60000;
     private final Path root;
 
     public WorkspaceFiles(Path workDirectory) throws IOException {

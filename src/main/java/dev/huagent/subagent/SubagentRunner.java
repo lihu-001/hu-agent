@@ -60,6 +60,14 @@ public final class SubagentRunner {
         String label = "  子代理[" + description + "]";
         int toolCalls = 0;
         for (int step = 1; step <= maxModelCalls; step++) {
+            if (step == maxModelCalls && step > 1) {
+                // 与主循环相同：最后一次请求前说明工具不会再执行，让子代理把已有发现总结出来。
+                int last = messages.size() - 1;
+                ChatMessage tool = messages.get(last);
+                messages.set(last, ChatMessage.tool(tool.toolCallId(), tool.content() + "\n\n[程序提示] 这是最后一次"
+                        + "请求（模型调用上限 " + maxModelCalls + " 次），再调用工具也不会执行。请直接用文字总结已完成的工作、"
+                        + "发现和未完成的部分。"));
+            }
             detail(label + " 模型请求> 第 " + step + " 次请求中...");
             ChatMessage answer = client.complete(List.copyOf(messages), definitions);
             messages.add(answer);

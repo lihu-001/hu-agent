@@ -9,11 +9,13 @@ import dev.huagent.config.HuHome;
 import dev.huagent.config.HuVersion;
 import dev.huagent.config.ModelDefaults;
 import dev.huagent.config.ProjectDirectory;
+import dev.huagent.context.ProjectContext;
 import dev.huagent.goal.GoalStarter;
 import dev.huagent.harness.AgentConsole;
 import dev.huagent.harness.EventHub;
 import dev.huagent.harness.HarnessOptions;
 import dev.huagent.harness.ModelRetryPolicy;
+import dev.huagent.harness.Transcript;
 import dev.huagent.harness.TurnInterrupt;
 import dev.huagent.hook.HookTrustStore;
 import dev.huagent.mcp.McpManager;
@@ -41,6 +43,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +57,12 @@ import java.util.function.IntSupplier;
  * 工作目录与项目级 .agents/（Hook、MCP、技能）都是运行 hu 时所在的目录。
  */
 public final class HuMain {
+    /**
+     * 一次模型请求的超时。请求不是流式的，超时要覆盖模型生成整段回复（含思考和大段编辑内容）的时间，
+     * 60 秒经常不够；与 Claude Code 的默认值相同取 10 分钟，等待期间随时可以按 Esc 中断。
+     */
+    static final Duration REQUEST_TIMEOUT = Duration.ofMinutes(10);
+
     private HuMain() {
     }
 
@@ -118,7 +127,8 @@ public final class HuMain {
                 return bound;
             };
             run(config, input, output, debug, autoApprove, title == null ? prompt : title.prompt(prompt),
-                    confirmPrompt(console, debug), splash(console, columns), commands, editor != null, interrupt);
+                    confirmPrompt(console, debug), transcript(console, debug), splash(console, columns), commands,
+                    editor != null, interrupt);
         } catch (IllegalArgumentException e) {
             failed = true;
             output.println("配置错误：" + e.getMessage());
@@ -138,27 +148,29 @@ public final class HuMain {
     }
 
     private static void run(AgentConfig config, BufferedReader input, PrintWriter output, boolean debug,
-                            AutoApprove autoApprove, PromptStyle prompt, ConfirmPrompt confirm, String splash,
-                            CommandStarter commands, boolean completion, TurnInterrupt interrupt)
+                            AutoApprove autoApprove, PromptStyle prompt, ConfirmPrompt confirm,
+                            Transcript transcript, String splash, CommandStarter commands, boolean completion,
+                            TurnInterrupt interrupt)
             throws IOException {
         // 启动页先于会话装配输出：MCP server 启动可能较慢，Hook 与 MCP 的授权确认也排在它下面。
         if (splash != null) {
             output.print(splash);
             output.flush();
         }
-        ModelClient client = ModelClients.create(config.modelConfig(), Duration.ofSeconds(60));
+        ModelClient client = ModelClients.create(config.modelConfig(), REQUEST_TIMEOUT);
         // 判断器可以单独配置一个更便宜的模型（同一接口）；未配置时与主 Agent 共用客户端。
         ModelClient evaluator = config.goalEvaluatorModel() == null ? client
-                : ModelClients.create(config.modelConfig().withModel(config.goalEvaluatorModel()),
-                Duration.ofSeconds(60));
+                : ModelClients.create(config.modelConfig().withModel(config.goalEvaluatorModel()), REQUEST_TIMEOUT);
         Path projectDirectory = ProjectDirectory.resolve();
         AgentConsole agentConsole = new AgentConsole(input, output);
         EventHub events = new EventHub();
         // 事件到达（定时入队、后台完成唤醒）时叫醒空闲的循环。
         events.addListener(agentConsole::notifyEvents);
+        // 与 Claude Code 的环境信息和 CLAUDE.md 相同：会话开始时采集一次，模型从第一轮起就知道身处哪个项目。
+        String projectContext = ProjectContext.render(config.workDirectory(), HuHome.resolve(), LocalDate.now());
         HarnessOptions options = new HarnessOptions(events,
                 new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES), agentConsole.prompts(), debug, prompt,
-                confirm, autoApprove, interrupt);
+                confirm, autoApprove, interrupt, projectContext, transcript);
         // 单 Agent 模式的确认在主线程上读这里；中断请求等回答读完再中断主线程（见 TurnInterrupt.answers）。
         BufferedReader answers = interrupt.answers(agentConsole.answers());
         TeamMain.Session session = TeamMain.createSession(config, client, answers, output,
@@ -198,6 +210,15 @@ public final class HuMain {
      */
     static ConfirmPrompt confirmPrompt(Console console, boolean debug) {
         return ConfirmPrompt.of(debug, console != null && Splash.ColorSupport.system() != Splash.ColorSupport.NONE);
+    }
+
+    /**
+     * 回复与工具调用摘要：交互终端上与 Claude Code 一样各成一段（● 开头、段间空行），能解释 ANSI 时工具带颜色；
+     * 调试模式与输出被重定向时保留 "助手> "、"工具> " 各一行。
+     */
+    static Transcript transcript(Console console, boolean debug) {
+        return console == null || debug ? Transcript.plain()
+                : Transcript.forTerminal(console.charset(), Splash.ColorSupport.system() != Splash.ColorSupport.NONE);
     }
 
     /** 交互终端上显示启动页（像素字、版本与一条随机提示）；没有 Console 时返回 null，只打印一行版本信息。 */

@@ -62,7 +62,7 @@ class McpLoopTest {
         StringWriter buffer = new StringWriter();
         TeamMain.Session session = session("x\nexit\n", buffer, answers(new ChatMessage("assistant", "ok")), false);
         session.run();
-        assertEquals(26, toolNames.get(0).size());
+        assertEquals(27, toolNames.get(0).size());
         assertEquals(ScheduleMain.systemPrompt(SkillCatalog.empty(), List.of()), requests.get(0).get(0).content());
         assertFalse(buffer.toString().contains("MCP"), buffer.toString());
     }
@@ -78,7 +78,7 @@ class McpLoopTest {
         assertFalse(Files.exists(record), "server 进程没有启动");
         assertFalse(Files.exists(root.resolve("mcp-trust")));
         if (!answer.isEmpty()) {
-            assertEquals(26, toolNames.get(0).size());
+            assertEquals(27, toolNames.get(0).size());
         }
     }
 
@@ -105,9 +105,9 @@ class McpLoopTest {
         TeamMain.Session session = session("once\nx\nexit\n", buffer, answers(new ChatMessage("assistant", "ok")), false);
         session.run();
         List<String> names = toolNames.get(0);
-        assertEquals(32, names.size());
+        assertEquals(33, names.size());
         assertEquals(List.of("mcp__fake__echo", "mcp__fake__add", "mcp__fake__fail", "mcp__fake__slow",
-                "mcp__fake__exit", "mcp__fake__image"), names.subList(26, 32));
+                "mcp__fake__exit", "mcp__fake__image"), names.subList(27, 33));
         assertEquals(ScheduleMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n" + McpManager.MCP_RULE,
                 requests.get(0).get(0).content());
         assertTrue(buffer.toString().contains("MCP> fake 已连接，6 个工具：echo、add、fail、slow、exit、image"),
@@ -264,7 +264,7 @@ class McpLoopTest {
         assertTrue(text.contains("missing API token"), text);
         assertTrue(text.contains("MCP> missing 启动失败，已跳过：无法启动 definitely-not-a-command-s18"), text);
         assertTrue(text.contains("MCP> fake 已连接"), text);
-        assertEquals(32, toolNames.get(0).size());
+        assertEquals(33, toolNames.get(0).size());
     }
 
     @Test
@@ -304,8 +304,8 @@ class McpLoopTest {
         TeamMain.Session session = session("once\nx\nexit\n", buffer, answers(new ChatMessage("assistant", "ok")), true);
         session.run();
         List<String> names = toolNames.get(0);
-        assertEquals(36, names.size());
-        assertEquals("mcp__fake__echo", names.get(30));
+        assertEquals(37, names.size());
+        assertEquals("mcp__fake__echo", names.get(31));
         assertEquals(TeamMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n" + McpManager.MCP_RULE,
                 requests.get(0).get(0).content());
     }

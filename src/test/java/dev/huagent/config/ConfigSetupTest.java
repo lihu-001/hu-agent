@@ -39,7 +39,9 @@ class ConfigSetupTest {
                 "4) Anthropic 格式自定义接口（Messages 协议"}) {
             assertTrue(text.toString().contains(option), option + "\n" + text);
         }
-        assertTrue(Files.readString(configFile).contains("compact.threshold-chars=50000"));
+        assertTrue(Files.readString(configFile).contains("agent.max-model-calls=200"));
+        // 压缩阈值不写死，按模型最大上下文换算。
+        assertEquals(1_200_000, config.compactThresholdChars());
         assertTrue(Files.readString(modelFile).contains("max-context-tokens=1000000"));
     }
 

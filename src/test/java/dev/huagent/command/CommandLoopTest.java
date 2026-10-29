@@ -86,7 +86,7 @@ class CommandLoopTest {
                 "状态> 模型 fake，目标判断器 fake（每轮最多自动续跑 8 次），接口 OpenAI 格式自定义接口 http://localhost，"
                         + "api-key 已配置（不显示）",
                 "团队模式未开启；MCP server 0 个；工作流已启用",
-                "工具> 共 31 个：\n  shell — ", "技能> 没有技能（目录 ",
+                "工具> 共 32 个：\n  shell — ", "技能> 没有技能（目录 ",
                 "MCP> 本会话没有已连接的 MCP server", "Hook> 主 Agent 的回调按执行顺序共 2 个：",
                 "  1. 内置日志 LoggingHook（四个事件）\n  2. Java 回调\n",
                 "记忆> .memory 中有 0 条", "清单> 任务清单为空。", "任务> .tasks 中有 0 个。",
@@ -114,7 +114,7 @@ class CommandLoopTest {
     @Test
     void noNewToolsAndSystemPromptIdenticalToS17() throws Exception {
         run("你好\nexit\n", 6, false);
-        assertEquals(31, toolNames.get(0).size(), "本课不新增工具");
+        assertEquals(32, toolNames.get(0).size(), "本课不新增工具");
         assertEquals(ScheduleMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n" + WorkflowTools.RULE
                 + "\n\n" + GoalController.RULE, mainRequests.get(0).get(0).content());
     }
@@ -218,7 +218,7 @@ class CommandLoopTest {
         String output = run("你好\n/context\n/export\nexit\n", 6, false);
         assertTrue(output.contains("上下文> 对话 2 条消息（user 1、assistant 1、tool 0），约 "), output);
         assertTrue(output.contains("上下文> 系统提示词 " + mainRequests.get(0).get(0).content().length()
-                + " 字符，工具 31 个"), output);
+                + " 字符，工具 32 个"), output);
         assertTrue(output.contains("导出> 已写入 .transcripts/transcript-"), output);
         assertTrue(output.contains("（3 条消息，含系统提示词）"), output);
         assertEquals(3, Files.readAllLines(transcripts().get(0), StandardCharsets.UTF_8).size());

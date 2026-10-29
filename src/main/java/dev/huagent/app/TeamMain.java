@@ -344,6 +344,8 @@ public final class TeamMain {
         PermissionPolicy policy = new PermissionPolicy(files);
         TranscriptStore transcripts = new TranscriptStore(files.root().resolve(TranscriptStore.DIRECTORY_NAME));
 
+        // hu 的项目上下文（环境、git 状态、AGENTS.md）Lead、子代理与队友都附加；其余入口为空串。
+        String contextSuffix = HarnessOptions.contextSuffix(options);
         // 队友：完整 Agent，每人自己的清单、压缩器和历史；没有后台、定时、记忆写入和团队管理工具。
         TeammateSetup.Factory factory = (name, role, worktree, team, memberOutput) -> {
             TodoList memberTodos = new TodoList();
@@ -357,7 +359,8 @@ public final class TeamMain {
             ToolRegistry childTools = ToolUseMain.createTools(memberConfig, permission, hooks,
                     List.of(new LoadSkillTool(catalog)));
             SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
-                    SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), memberOutput, debug);
+                    SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog) + contextSuffix,
+                    memberOutput, debug);
             ContextCompactor compactor = new ContextCompactor(client, transcripts, memberFiles.root(),
                     config.compactThresholdChars(), config.compactKeepToolResults(),
                     () -> memberTodos.items().isEmpty() ? null : memberTodos.render(), debug);
@@ -367,7 +370,7 @@ public final class TeamMain {
             extra.addAll(TeamTools.forTeammate(team, name));
             ToolRegistry registry = ToolUseMain.createTools(memberConfig, permission, hooks, extra);
             String prompt = teammatePrompt(name, role, catalog, entries)
-                    + (worktree == null ? "" : "\n\n" + worktreeRule(worktree));
+                    + (worktree == null ? "" : "\n\n" + worktreeRule(worktree)) + contextSuffix;
             return new TeammateSetup(client, registry, prompt, hooks,
                     new TodoReminder(memberTodos), compactor, config.maxModelCalls(), memberOutput, debug);
         };
@@ -383,7 +386,7 @@ public final class TeamMain {
                         options.events()::inSyntheticTurn, options.confirm(), options.autoApprove());
         ToolRegistry childTools = ToolUseMain.createTools(config, gate, hooks, List.of(new LoadSkillTool(catalog)));
         SubagentRunner runner = new SubagentRunner(client, childTools, config.maxModelCalls(),
-                SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog), output, debug);
+                SkillMain.systemPrompt(SubagentMain.SUBAGENT_PROMPT, catalog) + contextSuffix, output, debug);
         // S16：工作流工具只给 Lead；队友没有，子代理也没有。null 时与 S15 完全相同。
         WorkflowBinding workflow = workflows == null ? null : workflows.bind(runner, output, debug);
         ContextCompactor compactor = new ContextCompactor(client, transcripts, files.root(),
@@ -436,9 +439,10 @@ public final class TeamMain {
                         systemPrompt(catalog, entries) + mcp.promptSuffix() + workflowSuffix + goalSuffix, hooks,
                         new TodoReminder(todos), compactor, background, null, null, goal, slash)
                 : new ChatLoop(client, registry, config.maxModelCalls(),
-                        systemPrompt(catalog, entries, true) + mcp.promptSuffix() + workflowSuffix + goalSuffix,
+                        systemPrompt(catalog, entries, true) + mcp.promptSuffix() + workflowSuffix + goalSuffix
+                                + contextSuffix,
                         hooks, new TodoReminder(todos), compactor, background, options.events(), options.retry(),
-                        goal, slash, options.debug(), options.prompt(), options.interrupt());
+                        goal, slash, options.debug(), options.prompt(), options.interrupt(), options.transcript());
         if (startScheduler) {
             scheduleManager.start(debug);
         }

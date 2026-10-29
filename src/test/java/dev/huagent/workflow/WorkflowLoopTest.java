@@ -63,8 +63,8 @@ class WorkflowLoopTest {
     void registersWorkflowToolsAndPromptAddsRule() throws Exception {
         String output = run("x\nexit\n", scriptModel("ok"));
         List<String> names = toolNames.get(0);
-        assertEquals(31, names.size(), names.toString());
-        assertEquals(WorkflowTools.NAMES, names.subList(26, 31));
+        assertEquals(32, names.size(), names.toString());
+        assertEquals(WorkflowTools.NAMES, names.subList(27, 32));
         assertEquals(ScheduleMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n" + WorkflowTools.RULE,
                 requests.get(0).get(0).content());
         assertTrue(output.contains("工作流> .workflows 中有 0 个工作流，已完成 0 个"), output);
@@ -80,7 +80,7 @@ class WorkflowLoopTest {
                 List.of(), new HookTrustStore(root.resolve("trust")), new TodoList(), ZoneOffset.UTC,
                 Clock.fixed(NOW, ZoneOffset.UTC), false, Duration.ofSeconds(5));
         session.run();
-        assertEquals(26, toolNames.get(0).size(), "只有 S15 的二十六个工具");
+        assertEquals(27, toolNames.get(0).size(), "只有 S15 的二十七个工具");
         assertTrue(toolNames.get(0).stream().noneMatch(name -> name.startsWith("workflow_")));
         assertEquals(ScheduleMain.systemPrompt(SkillCatalog.empty(), List.of()),
                 requests.get(0).get(0).content());
@@ -137,7 +137,7 @@ class WorkflowLoopTest {
         assertEquals("步骤 1 的结果", done.steps().get(0).result());
         // 子代理只有六个基础工具（五个基础 + load_skill），没有工作流工具。
         int subIndex = indexOfSubagentRequest();
-        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "load_skill"),
+        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "load_skill"),
                 toolNames.get(subIndex));
     }
 
@@ -358,8 +358,8 @@ class WorkflowLoopTest {
         leadWoken.get(15, java.util.concurrent.TimeUnit.SECONDS);
         type(keyboard, "exit");
         running.get(15, java.util.concurrent.TimeUnit.SECONDS);
-        assertEquals(35, toolNames.get(0).size(), toolNames.get(0).toString());
-        assertEquals(WorkflowTools.NAMES, toolNames.get(0).subList(30, 35));
+        assertEquals(36, toolNames.get(0).size(), toolNames.get(0).toString());
+        assertEquals(WorkflowTools.NAMES, toolNames.get(0).subList(31, 36));
         assertTrue(toolNames.get(0).containsAll(TeamTools.LEAD_NAMES));
         assertEquals(ScheduleMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n" + TeamMain.TEAM_RULE
                         + "\n\n" + WorkflowTools.RULE,
@@ -447,7 +447,7 @@ class WorkflowLoopTest {
 
     private int indexOfSubagentRequest() {
         for (int i = 0; i < toolNames.size(); i++) {
-            if (toolNames.get(i).size() == 6) {
+            if (toolNames.get(i).size() == 7) {
                 return i;
             }
         }

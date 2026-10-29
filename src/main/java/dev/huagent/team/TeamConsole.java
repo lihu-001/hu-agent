@@ -3,6 +3,7 @@ package dev.huagent.team;
 import dev.huagent.harness.EventHub;
 import dev.huagent.harness.InputPump;
 import dev.huagent.harness.TurnEvents;
+import dev.huagent.permission.ChangePreview;
 import dev.huagent.permission.ConfirmPrompt;
 import dev.huagent.prompt.PromptStyle;
 import dev.huagent.tool.ToolCall;
@@ -40,8 +41,8 @@ public final class TeamConsole implements AutoCloseable {
     private record Wake() implements Event {
     }
 
-    private record Confirm(String member, String reason, ToolCall call, CompletableFuture<Boolean> answer)
-            implements Event {
+    private record Confirm(String member, String reason, ToolCall call, ChangePreview preview,
+                           CompletableFuture<Boolean> answer) implements Event {
     }
 
     private final BlockingQueue<Event> events = new LinkedBlockingQueue<>();
@@ -101,13 +102,19 @@ public final class TeamConsole implements AutoCloseable {
 
     /** 队友线程调用：排队等主线程询问用户，阻塞到有回答；控制台关闭或输入结束时视为拒绝。 */
     public boolean confirm(String member, String reason, ToolCall call) throws InterruptedException {
+        return confirm(member, reason, call, null);
+    }
+
+    /** preview 是确认时显示的改动预览（见 ChangePreview），为 null 时只显示参数。 */
+    public boolean confirm(String member, String reason, ToolCall call, ChangePreview preview)
+            throws InterruptedException {
         CompletableFuture<Boolean> answer = new CompletableFuture<>();
         open.add(answer);
         try {
             if (closed) {
                 return false;
             }
-            events.add(new Confirm(member, reason, call, answer));
+            events.add(new Confirm(member, reason, call, preview, answer));
             return answer.get();
         } catch (ExecutionException e) {
             return false;
@@ -120,8 +127,12 @@ public final class TeamConsole implements AutoCloseable {
 
     /** 队友线程调用：自动审批模式自动批准时只显示一行记录，不排队、不等待回答。 */
     public void approved(String member, String reason, ToolCall call) {
+        approved(member, reason, call, null);
+    }
+
+    public void approved(String member, String reason, ToolCall call, ChangePreview preview) {
         synchronized (output) {
-            confirmPrompt.approved(output, reason, call, member);
+            confirmPrompt.approved(output, reason, call, preview, member);
             output.flush();
         }
     }
@@ -210,7 +221,7 @@ public final class TeamConsole implements AutoCloseable {
         }
         synchronized (output) {
             confirmPrompt.ask(output, "[" + confirm.member() + "] " + confirm.reason(), confirm.call(),
-                    "允许队友 " + confirm.member() + " 本次调用？");
+                    confirm.preview(), "允许队友 " + confirm.member() + " 本次调用？");
             output.flush();
         }
         String answer = nextAnswer();

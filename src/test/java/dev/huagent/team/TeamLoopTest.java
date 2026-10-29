@@ -76,7 +76,7 @@ class TeamLoopTest {
                 }, false);
         assertFalse(session.teamEnabled());
         session.run();
-        assertEquals(26, leadTools.size(), "只有 S12 的工具");
+        assertEquals(27, leadTools.size(), "只有 S12 的工具");
         assertTrue(leadTools.stream().noneMatch(TeamTools.LEAD_NAMES::contains));
         assertEquals(ScheduleMain.systemPrompt(SkillCatalog.empty(), List.of()), leadRequests.get(0).get(0).content(),
                 "系统提示词与 S12 完全相同，没有团队规则");
@@ -95,7 +95,7 @@ class TeamLoopTest {
         });
         session.run();
         assertEquals(TeamTools.LEAD_NAMES, leadTools.subList(leadTools.size() - 4, leadTools.size()));
-        assertEquals(30, leadTools.size());
+        assertEquals(31, leadTools.size());
         assertEquals(ScheduleMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n" + TeamMain.TEAM_RULE,
                 leadRequests.get(0).get(0).content());
     }
@@ -169,7 +169,7 @@ class TeamLoopTest {
         running.get(15, TimeUnit.SECONDS);
 
         List<String> tools = teammateTools.get("alice");
-        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "todo_write", "task",
+        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "todo_write", "task",
                 "load_skill", "compact", "memory_read", "task_list", "task_get", "task_claim", "task_complete",
                 "send_message"), tools);
         String system = teammateRequests.get(0).get(0).content();

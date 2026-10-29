@@ -38,7 +38,7 @@ class PermissionLoopTest {
         List<List<ChatMessage>> requests = new ArrayList<>();
         String output = run("执行\nn\ny\n下一步\nexit\n", (messages, definitions) -> {
             requests.add(messages);
-            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob"),
+            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep"),
                     definitions.stream().map(ToolDefinition::name).toList());
             return requests.size() == 1 ? ChatMessage.assistant(null, List.of(
                     call("denied", "write_file", Map.of("path", "protected.txt", "content", "changed")),
@@ -56,7 +56,7 @@ class PermissionLoopTest {
                 results.stream().map(ChatMessage::toolCallId).toList());
         assertTrue(results.get(0).content().startsWith("权限拒绝"));
         assertTrue(results.get(1).content().startsWith("已写入"));
-        assertEquals("已批准", results.get(2).content());
+        assertEquals("     1\t已批准", results.get(2).content());
         assertEquals("created.txt\nprotected.txt", results.get(3).content());
         assertTrue(results.get(4).content().startsWith("权限拒绝"));
         assertTrue(results.get(5).content().contains("未知工具"));

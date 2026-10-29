@@ -133,7 +133,21 @@ export HU_BASE_URL=https://example.com/v1     # 官方接口可省略
 
 启动时先显示启动页：渐变色像素字 `hu`、版本和一条随机使用提示。颜色只在能解释 ANSI 转义的终端里显示（macOS / Linux 终端，Windows 上的 Windows Terminal、VS Code 终端、ConEmu），传统控制台窗口里不带颜色；设置环境变量 `NO_COLOR` 可关闭颜色。
 
-默认只显示对话、权限确认和每轮的最终回答：工具调用、工具结果以及与工具调用一起返回的中间回复都不显示（模型收到的仍是完整结果）。权限确认压成以【权限确认】开头的一行（终端支持时为黄色），如 `【权限确认】shell：git status  仅允许本次调用？[y/N]`；参数只有一个字符串时直接显示它，否则显示一行 JSON，参数很长时问题另起一行。排查问题时用 `hu --debug`（或 `-d`）启动，会额外显示每次模型请求与耗时、内置 Hook 日志、微压缩、启动清单、中间回复、工具调用（含 ID 与完整参数）和完整工具结果，权限确认恢复为原因、工具与调用 ID、参数、问题各一行。
+默认显示对话、模型的中间说明、权限确认，以及每次工具调用的摘要（与 Claude Code 相同，完整结果只给模型）。回复与每次工具调用各成一段，段与段之间空一行：回复以 `●` 开头，多行时之后的行缩进两格；工具调用第一行是 `● 工具名 参数`，第二行是 `⎿  结果`，如 `● grep 上下文剩余` / `⎿  找到 1 个文件`、`● shell` / `⎿  退出码 0，12 行输出`。终端支持颜色时工具的 `●` 为绿色、失败（工具错误、权限拒绝、被中断等）为红色，结果变暗；终端字符集不能显示 `●`、`⎿`（如 GBK 控制台）时改用 `*` 与 `-`。输出被重定向时保持原来的 `助手> `、`工具> ` 各一行，`--debug` 时回复仍以 `助手> ` 开头。读文件、搜索这类免确认的工具在摘要里显示路径或模式；需要确认的工具参数已经显示在确认行里，摘要只显示结果，确认行与摘要同属一段。权限确认以【权限确认】开头（终端支持时为黄色），如 `【权限确认】shell：git status  仅允许本次调用？[y/N]`。与 Claude Code 一样，写文件和编辑显示的是改动本身：确认行写明文件和增删行数（如 `edit_file：src/A.java（+1 −0）`），下面是带行号的 diff，新增行以 `+` 标出（绿色）、删除行以 `-` 标出（红色），前后各带两行上下文，远离改动的未改动行折叠，最多显示 60 行；新建文件显示开头 20 行；多行 Shell 命令逐行原样显示；问题单独一行。自动审批模式下的记录也带同样的预览。其他工具参数只有一个字符串时直接显示它，否则显示一行 JSON，参数很长时问题另起一行。排查问题时用 `hu --debug`（或 `-d`）启动，会额外显示每次模型请求与耗时、内置 Hook 日志、微压缩、启动清单、工具调用（含 ID 与完整参数）和完整工具结果，权限确认恢复为原因、工具与调用 ID、参数、问题各一行。
+
+### 工具与项目上下文
+
+基础工具与 Claude Code 对应：`glob` 按文件名查找，`grep` 按内容搜索（Java 正则；只读、免确认；git 仓库里遵守 `.gitignore`；`output_mode` 可选只列文件、显示匹配行与行号、计数），`read_file` 读文件（每行带行号，默认 2000 行，长文件用 `offset` / `limit` 分段读），`edit_file` 精确替换（`old_text` 必须唯一，否则不修改；`replace_all` 替换全部），`write_file` 写文件，`shell` 只用于构建、测试、git 等命令（输出超过上限时保留开头和结尾）。
+
+每次会话开始时，hu 把项目上下文附加到系统提示词，模型从第一轮起就知道自己是谁、在哪个项目里：
+
+- 工作目录、平台、shell 工具的语法、日期；
+- git 仓库里的当前分支、工作区状态和最近 5 次提交（会话开始时的快照）；
+- 说明文件：`~/.hu-agent/AGENTS.md`（对所有项目生效），以及从仓库根目录到工作目录逐层的 `AGENTS.md`（没有时读同目录的 `CLAUDE.md`，可以和 Claude Code 共用一份）。本仓库自己的说明见 [AGENTS.md](AGENTS.md)。
+
+系统提示词的工作方法部分改编自 [opencode](https://github.com/sst/opencode) 为开源模型写的提示词和 [oh-my-pi](https://github.com/can1357/oh-my-pi) 的工作流程约定（均为 MIT 许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)），最重要的几条在提示词末尾再重述一次。另外借鉴 oh-my-pi 对较弱模型的两条纠偏：模型返回空回复时提醒它继续（每轮最多两次）；连续三次用相同参数调用同一工具时，在结果后提醒它换个做法。
+
+每轮模型调用上限（`agent.max-model-calls`，默认 200）只是防止失控的安全网；用到最后一次时，hu 会告诉模型工具不会再执行，请它总结已完成的工作和剩余步骤，而不是直接丢掉最后一批工具调用。上下文压缩默认按 `max-context-tokens` 换算阈值，对话超过阈值一半之前保留全部工具结果的原文。模型请求不是流式的，一次请求最多等 10 分钟（与 Claude Code 相同，覆盖模型思考和写大段编辑的时间），连接最多等 30 秒；等待期间随时可以按 Esc 中断。
 
 ### 项目级配置
 
@@ -175,6 +189,8 @@ hu update --local                    # 在源码目录执行：构建（跳过�
 | `model.AnthropicClient` / `model.ModelClients` | Anthropic Messages 协议客户端（对话历史在发送前转换为 content block）；按接口类型创建客户端 |
 | `config.HuVersion` | 版本号，构建时由 Maven 写入 |
 | `HookTrustStore` / `McpTrustStore` | 授权记录改存到 `HuHome` 下 |
+| `context.ProjectContext` | 会话开始时附加到系统提示词的项目上下文：身份、环境、git 状态、`AGENTS.md` / `CLAUDE.md` |
+| `tool.file.GrepTool` | 按内容搜索（对应 Claude Code 的 Grep）；`read_file` 带行号并支持 `offset`，`edit_file` 要求匹配唯一 |
 | `prompt.LineEditor` | 交互终端用 JLine 读输入：斜杠命令列表（`SlashMenu`，可滚动，列表显示期间才开启鼠标跟踪）与输入历史；读取期间的后台、队友输出插在输入行上方。输入输出被重定向时仍按行读取 |
 
 发布包结构：`hu-agent/bin/hu`、`hu-agent/bin/hu.cmd`、`hu-agent/lib/hu-agent.jar`，以及 `hu-agent/install.sh`、`hu-agent/install.ps1`（供 `hu update --pkg` 离线使用）。启动脚本在 [src/dist/bin](src/dist/bin)，打包配置在 [src/assembly/dist.xml](src/assembly/dist.xml)。

@@ -11,6 +11,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -28,9 +29,29 @@ class PermissionPolicyTest {
     }
 
     @Test
+    void askDecisionsCarryAReadablePreviewOfTheChange() throws IOException {
+        Files.writeString(root.resolve("a.txt"), "first\nsecond\n");
+        PermissionPolicy.Decision edit = check("edit_file",
+                Map.of("path", "a.txt", "old_text", "second", "new_text", "2nd"));
+        assertEquals(ASK, edit.action());
+        assertEquals("a.txt（+1 −1）", edit.preview().summary());
+        assertEquals("b.txt（新建，1 行）",
+                check("write_file", Map.of("path", "b.txt", "content", "x")).preview().summary());
+        assertEquals("多行命令，共 2 行", check("shell", Map.of("command", "cd src\nmvn test")).preview().summary());
+        // 单行命令、找不到 old_text、读文件都不需要预览，确认行照常显示参数。
+        assertNull(check("shell", Map.of("command", "mvn test")).preview());
+        assertNull(check("edit_file", Map.of("path", "a.txt", "old_text", "missing", "new_text", "x")).preview());
+        assertNull(check("read_file", Map.of("path", "a.txt")).preview());
+    }
+
+    @Test
     void readsAndGlobAreAllowedWhileWritesAndEditsAsk() {
         assertEquals(ALLOW, check("read_file", Map.of("path", "note.txt")).action());
         assertEquals(ALLOW, check("glob", Map.of("pattern", "**/*.txt")).action());
+        assertEquals(ALLOW, check("grep", Map.of("pattern", "上下文")).action());
+        assertEquals(ALLOW, check("grep", Map.of("pattern", "上下文", "path", "src")).action());
+        assertEquals(DENY, check("grep", Map.of("pattern", "上下文", "path", "../outside")).action(),
+                "grep 只读，但路径同样不能超出工作目录");
         assertEquals(ALLOW, check("todo_write", Map.of("todos", java.util.List.of())).action());
         assertEquals(ALLOW, check("task", Map.of("description", "a", "prompt", "b")).action());
         assertEquals(ALLOW, check("load_skill", Map.of("name", "code-review")).action());

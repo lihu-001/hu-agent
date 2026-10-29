@@ -37,7 +37,7 @@ public final class OpenAiClient implements ModelClient, ModelSelection {
         this.apiKey = ModelHttp.apiKey(apiKey);
         this.model = model.strip();
         this.timeout = timeout;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(timeout).build();
+        this.httpClient = ModelHttp.httpClient(timeout);
     }
 
     @Override

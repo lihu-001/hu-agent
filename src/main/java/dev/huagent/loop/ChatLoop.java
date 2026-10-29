@@ -11,6 +11,7 @@ import dev.huagent.goal.GoalDecision;
 import dev.huagent.harness.EventHub;
 import dev.huagent.harness.ModelRetryPolicy;
 import dev.huagent.harness.ToolTrace;
+import dev.huagent.harness.Transcript;
 import dev.huagent.harness.TurnEvents;
 import dev.huagent.harness.TurnInterrupt;
 import dev.huagent.hook.AgentHooks;
@@ -40,6 +41,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public final class ChatLoop {
@@ -49,6 +51,12 @@ public final class ChatLoop {
     static final String INTERRUPTED_MARKER = "[用户中断了本轮请求]";
     static final String TOOL_INTERRUPTED = "工具已中断：用户中断了本轮请求，操作可能已部分完成。";
     static final String TOOL_SKIPPED = "工具未执行：用户中断了本轮请求。";
+    /** 每轮最多因空回复重试的次数（借鉴 oh-my-pi 的 empty-stop-retry）。 */
+    static final int MAX_EMPTY_RETRIES = 2;
+    static final String EMPTY_REPLY_NOTICE = "[程序提示] 你的上一次回复是空的，任务还没完成。"
+            + "请继续：发出下一个需要的工具调用，或者给出用户能看到的最终回答。";
+    /** 用相同参数连续调用同一工具达到这个次数时提醒（借鉴 oh-my-pi 的 tool-call-loop-redirect）。 */
+    static final int REPEATED_CALL_THRESHOLD = 3;
     private final ModelClient client;
     private final ToolRegistry registry;
     private final int maxModelCalls;
@@ -70,6 +78,8 @@ public final class ChatLoop {
     private final PromptStyle prompt;
     /** 用户中断（Esc / Ctrl+C）；为 null 时没有中断，与之前行为一致。 */
     private final TurnInterrupt interrupt;
+    /** 回复与工具调用摘要的显示样式；hu 交互终端用 Transcript.marked，其余构造器为 "助手> "、"工具> "。 */
+    private final Transcript transcript;
     /** 最近一次主对话请求之后的上下文 token 数，-1 表示未知；只用于提示符显示。 */
     private int contextTokens = -1;
 
@@ -174,6 +184,16 @@ public final class ChatLoop {
                     BackgroundManager background, EventHub events, ModelRetryPolicy retryPolicy,
                     GoalController goal, CommandRegistry commands, boolean debug, PromptStyle prompt,
                     TurnInterrupt interrupt) {
+        this(client, registry, maxModelCalls, systemPrompt, hooks, reminder, compactor, background, events,
+                retryPolicy, goal, commands, debug, prompt, interrupt, null);
+    }
+
+    /** transcript 只改变回复与工具调用摘要在终端上的样子（见 Transcript）；为 null 时与之前完全相同。 */
+    public ChatLoop(ModelClient client, ToolRegistry registry, int maxModelCalls, String systemPrompt,
+                    AgentHooks hooks, TodoReminder reminder, ContextCompactor compactor,
+                    BackgroundManager background, EventHub events, ModelRetryPolicy retryPolicy,
+                    GoalController goal, CommandRegistry commands, boolean debug, PromptStyle prompt,
+                    TurnInterrupt interrupt, Transcript transcript) {
         if (maxModelCalls <= 0) {
             throw new IllegalArgumentException("每轮模型调用上限必须为正数");
         }
@@ -192,6 +212,7 @@ public final class ChatLoop {
         this.debug = debug;
         this.prompt = Objects.requireNonNull(prompt);
         this.interrupt = interrupt;
+        this.transcript = transcript == null ? Transcript.plain() : transcript;
     }
 
     public void run(BufferedReader input, PrintWriter output) throws IOException {
@@ -252,6 +273,7 @@ public final class ChatLoop {
             if (interrupt != null) {
                 interrupt.begin();
             }
+            transcript.startTurn();
             // 命令提交的本轮输入在 UserPromptSubmit 放行后才生效（如设置目标），被拒绝时在提示后追加说明。
             Supplier<String> onAccepted = null;
             String rejectedNote = "";
@@ -323,6 +345,10 @@ public final class ChatLoop {
             List<ChatMessage> request = new ArrayList<>(history);
             int turnStart = request.size();
             boolean toolsRecorded = false;
+            // 借鉴 oh-my-pi 对较弱模型的纠偏：本轮空回复的重试次数；上一个工具调用与连续相同的次数。
+            int emptyRetries = 0;
+            String previousCall = null;
+            int sameCallCount = 0;
             // 正在执行的工具调用：本轮被中断时它的结果记为已中断，之后的记为未执行。
             ToolCall running = null;
             // S11：本轮未保存前交付的通知；首次请求失败、本轮被丢弃时放回队列。
@@ -380,6 +406,12 @@ public final class ChatLoop {
                             detail(output, scheduled.isEmpty() ? "后台> 已将完成结果交给模型"
                                     : "事件> 已将程序事件交给模型");
                         }
+                        // 本轮最后一次请求：先告诉模型工具不会再执行，让它总结进展和剩余步骤，
+                        // 而不是让最后一批工具调用白白丢掉、用户什么也看不到。
+                        boolean lastCall = step == maxModelCalls && toolsRecorded;
+                        if (lastCall) {
+                            appendToLast(request, limitNotice());
+                        }
                         // 非流式请求在完整响应前没有输出，先提示等待并在返回后报告耗时。
                         detail(output, "模型请求> 第 " + step + " 次请求中...");
                         List<ChatMessage> sent = request;
@@ -411,12 +443,25 @@ public final class ChatLoop {
                         detail(output, "模型响应> 耗时 " + elapsedMillis + " ms，工具调用 "
                                 + answer.toolCalls().size() + " 个");
                         request.add(answer);
-                        // 与工具调用一起返回的文字是中间过程，非 debug 时只显示不再调用工具的最终回答。
-                        if (StrUtil.isNotBlank(answer.content()) && (debug || answer.toolCalls().isEmpty())) {
-                            output.println("助手> " + answer.content());
+                        // 与 Claude Code 相同，与工具调用一起返回的中间说明也显示，用户能看到模型打算做什么。
+                        if (StrUtil.isNotBlank(answer.content())) {
+                            print(output, out -> transcript.reply(out, answer.content()));
+                        }
+                        if (answer.toolCalls().isEmpty() && StrUtil.isBlank(answer.content()) && !synthetic
+                                && step < maxModelCalls && emptyRetries < MAX_EMPTY_RETRIES) {
+                            // 空回复（没有文字也没有工具调用）多半是模型中途停住了：不记录这条空消息，
+                            // 提醒附在上一条消息末尾（不新增消息角色），再请求一次。
+                            request.removeLast();
+                            appendToLast(request, EMPTY_REPLY_NOTICE);
+                            emptyRetries++;
+                            detail(output, "提示> 模型返回了空回复，已提醒它继续");
+                            continue;
                         }
                         if (answer.toolCalls().isEmpty()) {
                             history = request;
+                            if (lastCall && (goal == null || !goal.active())) {
+                                output.println("提示> 本轮已用完 " + maxModelCalls + " 次模型调用；输入“继续”接着做。");
+                            }
                             output.flush();
                             // S17：有活跃目标时先由独立判断器决定本轮能否结束（Stop 之前的 Goal Gate）。
                             GoalDecision decision = goal == null ? GoalDecision.ALLOW
@@ -440,12 +485,27 @@ public final class ChatLoop {
                         for (ToolCall call : answer.toolCalls()) {
                             checkInterrupt();
                             detail(output, ToolTrace.request(call));
+                            // 非 debug 时每次工具调用显示一段摘要（调用了什么、结果如何），完整结果只给模型；
+                            // 执行前先与上一段隔开，执行中弹出的权限确认与摘要同属一段。
+                            boolean summarize = !debug && !limitReached;
+                            if (summarize) {
+                                print(output, transcript::beforeTool);
+                            }
                             running = call;
                             String result = limitReached ? "工具未执行：已达到本轮模型调用上限。"
                                     : registry.execute(call);
                             running = null;
-                            request.add(ChatMessage.tool(call.id(), result));
-                            detail(output, ToolTrace.result(call, result));
+                            String signature = call.name() + "\u0000" + call.arguments();
+                            sameCallCount = signature.equals(previousCall) ? sameCallCount + 1 : 1;
+                            previousCall = signature;
+                            // 用相同参数反复调用同一个工具，结果不会变：提醒模型换个做法，避免空转到调用上限。
+                            String recorded = sameCallCount >= REPEATED_CALL_THRESHOLD && !limitReached
+                                    ? result + "\n\n" + repeatedCallNotice(call.name(), sameCallCount) : result;
+                            request.add(ChatMessage.tool(call.id(), recorded));
+                            detail(output, ToolTrace.result(call, recorded));
+                            if (summarize) {
+                                print(output, out -> transcript.tool(out, call, result));
+                            }
                         }
                         // S05：提醒附加在本批最后一个工具结果后，不新增消息角色，协议顺序不变。
                         String nudge = reminder == null || limitReached ? null : reminder.afterToolBatch();
@@ -460,7 +520,7 @@ public final class ChatLoop {
                         if (limitReached) {
                             String reason = "已达到本轮模型调用上限（" + maxModelCalls + " 次），停止本轮；最后一批工具未执行。";
                             request.add(new ChatMessage("assistant", reason));
-                            output.println("助手> " + reason);
+                            print(output, out -> transcript.reply(out, reason));
                             if (goal != null && goal.active()) {
                                 output.println("目标> 目标保持活跃；输入任意内容继续推进。");
                             }
@@ -605,9 +665,24 @@ public final class ChatLoop {
         return extra.toString();
     }
 
-    /** 程序事件与后台完成合并附加到最后一条消息末尾，定时事件在前；消息没有文本时直接以事件开头。 */
+    /** 程序事件与后台完成合并附加到最后一条消息末尾，定时事件在前。 */
     private static void appendNotices(List<ChatMessage> request, List<String> scheduled, List<String> notices) {
-        String extra = renderNotices(scheduled, notices);
+        appendToLast(request, renderNotices(scheduled, notices));
+    }
+
+    static String repeatedCallNotice(String tool, int count) {
+        return "[程序提示] 你已经连续 " + count + " 次用完全相同的参数调用 " + tool + "，结果不会变。"
+                + "本轮不要再这样调用：换参数、换工具，或者根据已有结果给出结论。";
+    }
+
+    /** 本轮最后一次请求附加的说明；模型照常可以调用工具，但这批调用不会执行。 */
+    private String limitNotice() {
+        return "[程序提示] 本轮已用到第 " + maxModelCalls + " 次模型调用（上限），这是本轮最后一次请求，"
+                + "再调用工具也不会执行。请直接用文字说明已完成的工作、目前的发现，以及还剩哪些步骤；用户回复后可以接着做。";
+    }
+
+    /** 附加到最后一条 user/tool 消息末尾，不新增消息角色、不改变协议顺序；消息没有文本时直接以附加内容开头。 */
+    private static void appendToLast(List<ChatMessage> request, String extra) {
         int last = request.size() - 1;
         ChatMessage message = request.get(last);
         String base = message.content() == null ? "" : message.content();
@@ -644,8 +719,12 @@ public final class ChatLoop {
 
     /** 命令输出可能有多行，团队模式下队友也在写同一终端，整段加锁输出。 */
     private static void print(PrintWriter output, String text) {
+        print(output, out -> out.println(text));
+    }
+
+    private static void print(PrintWriter output, Consumer<PrintWriter> block) {
         synchronized (output) {
-            output.println(text);
+            block.accept(output);
             output.flush();
         }
     }

@@ -16,16 +16,32 @@ import java.io.BufferedReader;
  * confirm 是权限确认的样式：debug 时为原来的多行（full），否则为一行（compact），hu 在能解释 ANSI 的终端上带颜色。
  * autoApprove 是 Lead、子代理与队友共用的自动审批模式开关（见 AutoApprove）；只有 hu 会打开，其余入口始终关闭。
  * interrupt 让 Lead 的一轮可被用户中断（见 TurnInterrupt）；只有 hu 接上行编辑器的按键，其余入口不会有中断请求。
+ * projectContext 是会话开始时采集的项目上下文（见 ProjectContext），附加在 Lead、子代理与队友的系统提示词末尾；
+ * 为 null 时（教程入口与测试）系统提示词不变。
+ * transcript 是 Lead 的回复与工具调用摘要在终端上的样式（见 Transcript），hu 交互终端用 marked；
+ * 为 null 时为原来的 "助手> "、"工具> " 各一行（plain）。
  */
 public record HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug,
                              PromptStyle prompt, ConfirmPrompt confirm, AutoApprove autoApprove,
-                             TurnInterrupt interrupt) {
+                             TurnInterrupt interrupt, String projectContext, Transcript transcript) {
     public HarnessOptions {
         if (events == null || retry == null || prompt == null || confirm == null || autoApprove == null
                 || interrupt == null) {
             throw new IllegalArgumentException(
                     "HarnessOptions 的 events、retry、prompt、confirm、autoApprove 与 interrupt 不能为空");
         }
+    }
+
+    public HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug,
+                          PromptStyle prompt, ConfirmPrompt confirm, AutoApprove autoApprove,
+                          TurnInterrupt interrupt, String projectContext) {
+        this(events, retry, loopInput, debug, prompt, confirm, autoApprove, interrupt, projectContext, null);
+    }
+
+    public HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug,
+                          PromptStyle prompt, ConfirmPrompt confirm, AutoApprove autoApprove,
+                          TurnInterrupt interrupt) {
+        this(events, retry, loopInput, debug, prompt, confirm, autoApprove, interrupt, null);
     }
 
     public HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug,
@@ -40,6 +56,11 @@ public record HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedRe
 
     public HarnessOptions(EventHub events, ModelRetryPolicy retry, BufferedReader loopInput, boolean debug) {
         this(events, retry, loopInput, debug, PromptStyle.plain(), ConfirmPrompt.of(debug, false));
+    }
+
+    /** 附加在系统提示词末尾的项目上下文；options 或其中的 projectContext 为 null 时为空串。 */
+    public static String contextSuffix(HarnessOptions options) {
+        return options == null || options.projectContext() == null ? "" : "\n\n" + options.projectContext();
     }
 
     /** 教程入口：完整输出。 */

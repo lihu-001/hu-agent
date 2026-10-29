@@ -43,7 +43,7 @@ class ChatLoopTest {
     void executesDifferentToolsSequentiallyAndKeepsCallIdsAndHistory() throws Exception {
         List<List<ChatMessage>> requests = new ArrayList<>();
         String output = run("\n开始\n刚才做了什么\nexit\n不应发送\n", (messages, definitions) -> {
-            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob"),
+            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep"),
                     definitions.stream().map(ToolDefinition::name).toList());
             requests.add(messages);
             return requests.size() == 1 ? ChatMessage.assistant(null, List.of(
@@ -57,13 +57,13 @@ class ChatLoopTest {
         List<ChatMessage> results = requests.get(1).subList(3, 7);
         assertEquals(List.of("write", "edit", "read", "find"),
                 results.stream().map(ChatMessage::toolCallId).toList());
-        assertEquals("终稿", results.get(2).content());
+        assertEquals("     1\t终稿", results.get(2).content());
         assertEquals("note.txt", results.get(3).content());
         assertEquals("终稿", Files.readString(root.resolve("note.txt")));
         assertEquals(List.of("system", "user", "assistant", "tool", "tool", "tool", "tool", "assistant", "user"),
                 requests.get(2).stream().map(ChatMessage::role).toList());
         assertTrue(output.contains("工具请求> write_file [write]"));
-        assertTrue(output.contains("工具结果> [read] 终稿"));
+        assertTrue(output.contains("工具结果> [read]      1\t终稿"));
     }
 
     @Test
@@ -100,7 +100,70 @@ class ChatLoopTest {
         assertFalse(Files.exists(root.resolve("file-2")));
         assertEquals("write-2", requests.get(2).get(5).toolCallId());
         assertTrue(requests.get(2).get(5).content().contains("工具未执行"));
+        assertTrue(requests.get(1).get(3).content().contains("[程序提示] 本轮已用到第 2 次模型调用（上限）"),
+                "最后一次请求前告诉模型工具不会再执行");
         assertTrue(output.contains("上限（2 次）"));
+    }
+
+    @Test
+    void emptyReplyIsNotRecordedAndModelIsAskedToContinue() throws Exception {
+        List<List<ChatMessage>> requests = new ArrayList<>();
+        String output = run("执行\n下一轮\n", (messages, definitions) -> {
+            requests.add(messages);
+            return switch (requests.size()) {
+                case 1 -> new ChatMessage("assistant", "");
+                case 2 -> new ChatMessage("assistant", "做完了");
+                default -> new ChatMessage("assistant", "好");
+            };
+        }, 10);
+        assertEquals(3, requests.size());
+        ChatMessage retried = requests.get(1).get(requests.get(1).size() - 1);
+        assertEquals("user", retried.role());
+        assertEquals("执行\n\n" + ChatLoop.EMPTY_REPLY_NOTICE, retried.content(), "提醒附在上一条消息末尾，空回复不记录");
+        assertTrue(output.contains("助手> 做完了"), output);
+        assertEquals(List.of("system", "user", "assistant", "user"),
+                requests.get(2).stream().map(ChatMessage::role).toList());
+    }
+
+    @Test
+    void emptyRepliesAreRetriedAtMostTwicePerTurn() throws Exception {
+        List<List<ChatMessage>> requests = new ArrayList<>();
+        run("执行\n", (messages, definitions) -> {
+            requests.add(messages);
+            return new ChatMessage("assistant", "");
+        }, 10);
+        assertEquals(1 + ChatLoop.MAX_EMPTY_RETRIES, requests.size());
+    }
+
+    @Test
+    void repeatingTheSameCallGetsARedirectNotice() throws Exception {
+        List<List<ChatMessage>> requests = new ArrayList<>();
+        Files.writeString(root.resolve("a.txt"), "内容");
+        run("执行\n", (messages, definitions) -> {
+            requests.add(messages);
+            return requests.size() <= 3
+                    ? ChatMessage.assistant(null, List.of(call("r" + requests.size(), "read_file", Map.of("path", "a.txt"))))
+                    : new ChatMessage("assistant", "结束");
+        }, 10);
+        List<ChatMessage> last = requests.get(3);
+        assertFalse(last.get(last.size() - 3).content().contains("[程序提示]"), "第二次相同调用还不提醒");
+        assertEquals("     1\t内容\n\n" + ChatLoop.repeatedCallNotice("read_file", 3), last.get(last.size() - 1).content());
+    }
+
+    @Test
+    void lastCallLetsModelSummarizeInsteadOfDroppingWork() throws Exception {
+        List<List<ChatMessage>> requests = new ArrayList<>();
+        String output = run("执行\n", (messages, definitions) -> {
+            requests.add(messages);
+            return requests.size() == 1
+                    ? ChatMessage.assistant("先写文件", List.of(call("w", "write_file", Map.of("path", "a", "content", "x"))))
+                    : new ChatMessage("assistant", "已写好 a，还剩测试没跑");
+        }, 2);
+        assertEquals(2, requests.size());
+        assertTrue(output.contains("助手> 先写文件"), "中间说明也显示：" + output);
+        assertTrue(output.contains("助手> 已写好 a，还剩测试没跑"), output);
+        assertTrue(output.contains("提示> 本轮已用完 2 次模型调用；输入“继续”接着做。"), output);
+        assertFalse(output.contains("最后一批工具未执行"), output);
     }
 
     @Test

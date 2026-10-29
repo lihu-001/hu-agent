@@ -45,11 +45,27 @@ public final class ConfirmPrompt {
 
     /** 打印确认提示，问题之后不换行，光标停在回答位置；调用方负责加锁与 flush。 */
     public void ask(PrintWriter output, String reason, ToolCall call, String question) {
+        ask(output, reason, call, null, question);
+    }
+
+    /**
+     * preview 非 null 时（写文件、编辑与多行命令，见 ChangePreview）与 Claude Code 一样显示改动本身：
+     * compact 为一行 "【权限确认】工具：摘要"，其下逐行显示带行号的 diff 或命令，问题单独一行；
+     * full 在参数之后追加同样的预览。
+     */
+    public void ask(PrintWriter output, String reason, ToolCall call, ChangePreview preview, String question) {
         if (!compact) {
             output.println("权限确认> " + reason);
             output.println("工具> " + call.name() + " [" + call.id() + "]");
             output.println("参数> " + call.arguments());
+            printPreview(output, preview, "预览> ");
             output.print(question + "[y/N] ");
+            return;
+        }
+        if (preview != null) {
+            output.println(paint("1;33", LABEL) + paint("1", call.name()) + "：" + TerminalText.visible(preview.summary()));
+            printPreview(output, preview, null);
+            output.print("  " + paint("33", question + "[y/N]") + " ");
             return;
         }
         String detail = detail(call.arguments());
@@ -66,15 +82,47 @@ public final class ConfirmPrompt {
      * compact 为一行 "【自动批准】工具：参数"，队友的调用在工具名前加 "[名字] "。调用方负责加锁与 flush。
      */
     public void approved(PrintWriter output, String reason, ToolCall call, String member) {
+        approved(output, reason, call, null, member);
+    }
+
+    /** preview 非 null 时与 ask 相同，在记录之下显示改动本身，自动批准的改动也看得到改了什么。 */
+    public void approved(PrintWriter output, String reason, ToolCall call, ChangePreview preview, String member) {
         String who = member == null ? "" : "[" + member + "] ";
         if (!compact) {
             output.println("权限确认> " + who + reason);
             output.println("工具> " + call.name() + " [" + call.id() + "]");
             output.println("参数> " + call.arguments());
+            printPreview(output, preview, "预览> ");
             output.println("自动审批模式，已自动批准。");
             return;
         }
-        output.println(paint("1;33", APPROVED_LABEL) + who + paint("1", call.name()) + "：" + detail(call.arguments()));
+        output.println(paint("1;33", APPROVED_LABEL) + who + paint("1", call.name()) + "："
+                + (preview == null ? detail(call.arguments()) : TerminalText.visible(preview.summary())));
+        printPreview(output, preview, null);
+    }
+
+    /**
+     * 预览明细：行号右对齐，新增行以 + 标出（绿色），删除行以 - 标出（红色），说明行变暗；
+     * 制表符展开成四个空格，其余控制字符转义，不会被终端执行。label 非 null 时先打印一行摘要（full 样式）。
+     */
+    private void printPreview(PrintWriter output, ChangePreview preview, String label) {
+        if (preview == null) {
+            return;
+        }
+        if (label != null) {
+            output.println(label + TerminalText.visible(preview.summary()));
+        }
+        for (ChangePreview.Line line : preview.lines()) {
+            String text = TerminalText.visible(line.text().replace("\t", "    "));
+            String number = line.number() == 0 ? "     " : String.format("%5d", line.number());
+            output.println(switch (line.kind()) {
+                case ADDED -> paint("32", "  " + number + " + " + text);
+                case REMOVED -> paint("31", "  " + number + " - " + text);
+                case CONTEXT -> "  " + number + "   " + text;
+                case NOTE -> paint("2", "          " + text);
+                case PLAIN -> "    " + text;
+            });
+        }
     }
 
     /**

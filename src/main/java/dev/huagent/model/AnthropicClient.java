@@ -61,7 +61,7 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
         this.maxTokens = maxTokens;
         this.bearer = bearer;
         this.timeout = timeout;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(timeout).build();
+        this.httpClient = ModelHttp.httpClient(timeout);
     }
 
     @Override

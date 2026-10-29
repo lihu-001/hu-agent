@@ -42,13 +42,13 @@ class SubagentLoopTest {
         run("调研\nexit\n", (messages, definitions) -> {
             List<String> names = definitions.stream().map(ToolDefinition::name).toList();
             if (messages.get(0).content().equals(SubagentMain.SUBAGENT_PROMPT)) {
-                assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob"), names);
+                assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep"), names);
                 child.add(messages);
                 return child.size() == 1
                         ? ChatMessage.assistant(null, List.of(call("r", "read_file", Map.of("path", "a.txt"))))
                         : new ChatMessage("assistant", "a.txt 内容已确认");
             }
-            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "todo_write", "task"), names);
+            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "todo_write", "task"), names);
             parent.add(messages);
             return parent.size() == 1 ? ChatMessage.assistant(null, List.of(task("t1", "读文件", "读取 a.txt")))
                     : new ChatMessage("assistant", "完成");

@@ -38,10 +38,10 @@ public final class TeammatePermission implements ToolPermission {
             case DENY -> decision.reason();
             case ASK -> {
                 if (autoApprove != null && autoApprove.enabled()) {
-                    console.approved(member, decision.reason(), call);
+                    console.approved(member, decision.reason(), call, decision.preview());
                     yield null;
                 }
-                yield console.confirm(member, decision.reason(), call) ? null : "用户未批准本次调用。";
+                yield console.confirm(member, decision.reason(), call, decision.preview()) ? null : "用户未批准本次调用。";
             }
         };
     }

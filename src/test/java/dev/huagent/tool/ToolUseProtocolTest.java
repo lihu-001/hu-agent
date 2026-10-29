@@ -32,7 +32,7 @@ class ToolUseProtocolTest {
     Path root;
 
     @Test
-    void sendsFiveSchemasAndReturnsFileResultsThroughRealHttpClient() throws Exception {
+    void sendsSixSchemasAndReturnsFileResultsThroughRealHttpClient() throws Exception {
         List<JSONObject> requests = new CopyOnWriteArrayList<>();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v1/chat/completions", exchange -> {
@@ -62,7 +62,7 @@ class ToolUseProtocolTest {
                     new PrintWriter(output));
             assertEquals(2, requests.size());
             JSONArray schemas = requests.get(0).getJSONArray("tools");
-            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob"),
+            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep"),
                     schemas.stream().map(value -> ((JSONObject) value).getJSONObject("function").getString("name")).toList());
             for (int i = 0; i < schemas.size(); i++) {
                 assertEquals("function", schemas.getJSONObject(i).getString("type"));
@@ -75,7 +75,7 @@ class ToolUseProtocolTest {
                 assertEquals("tool", messages.getJSONObject(i + 3).getString("role"));
                 assertEquals(List.of("w", "e", "r", "g").get(i), messages.getJSONObject(i + 3).getString("tool_call_id"));
             }
-            assertEquals("中文终稿", messages.getJSONObject(5).getString("content"));
+            assertEquals("     1\t中文终稿", messages.getJSONObject(5).getString("content"));
             assertEquals("note.txt", messages.getJSONObject(6).getString("content"));
             assertEquals("中文终稿", Files.readString(root.resolve("note.txt")));
             assertTrue(output.toString().contains("助手> 已验证终稿"));

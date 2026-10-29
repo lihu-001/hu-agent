@@ -51,7 +51,7 @@ class BackgroundLoopTest {
         run("x\nexit\n", script(new ChatMessage("assistant", "ok")));
         List<String> names = toolNames.get(0);
         assertEquals(List.of("background_run", "background_check"), names.subList(names.size() - 2, names.size()));
-        assertEquals(20, names.size());
+        assertEquals(21, names.size());
         assertEquals(TaskMain.systemPrompt(SkillCatalog.empty(), List.of()) + "\n\n" + BackgroundMain.BACKGROUND_RULE,
                 requests.get(0).get(0).content());
     }
@@ -232,7 +232,7 @@ class BackgroundLoopTest {
                 ChatMessage.assistant(null, List.of(call("t1", "task", Map.of("description", "看看", "prompt", "随便看看")))),
                 new ChatMessage("assistant", "子代理总结"),
                 new ChatMessage("assistant", "完成")));
-        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "load_skill"),
+        assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "load_skill"),
                 toolNames.get(1));
     }
 

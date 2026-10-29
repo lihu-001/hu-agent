@@ -37,7 +37,7 @@ class TodoLoopTest {
         List<List<ChatMessage>> requests = new ArrayList<>();
         List<String> events = new ArrayList<>();
         String output = run("规划\nexit\n", (messages, definitions) -> {
-            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "todo_write"),
+            assertEquals(List.of("shell", "read_file", "write_file", "edit_file", "glob", "grep", "todo_write"),
                     definitions.stream().map(ToolDefinition::name).toList());
             requests.add(messages);
             return requests.size() == 1 ? ChatMessage.assistant(null, List.of(todo("plan",
