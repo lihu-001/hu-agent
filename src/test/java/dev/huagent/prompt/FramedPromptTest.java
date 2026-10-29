@@ -19,6 +19,7 @@ import java.io.StringReader;
 import java.io.StringWriter;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
@@ -48,6 +49,10 @@ class FramedPromptTest {
         FramedPrompt prompt = new FramedPrompt("> ", '-', () -> columns[0]);
         assertEquals("-".repeat(29), prompt.rule());
         columns[0] = 5;
+        assertEquals("-".repeat(4), prompt.rule());
+        columns[0] = 1;
+        assertEquals("", prompt.rule());
+        columns[0] = 0;
         assertEquals("-".repeat(FramedPrompt.MIN_RULE), prompt.rule());
     }
 
@@ -63,26 +68,25 @@ class FramedPromptTest {
     @Test
     void ruleShowsModelThenContextAndFillsWidth() {
         FramedPrompt prompt = new FramedPrompt("❯ ", '─', () -> 60, " glm-4.6 ", 1_000_000);
-        // 还没有用量：只显示最大值。中文按两列计，前缀共 34 列，补 25 个 ─ 到 59 列。
-        assertEquals("── glm-4.6 ── 上下文最大 1M token " + "─".repeat(25), prompt.rule());
+        assertTrue(prompt.rule().startsWith("── glm-4.6 ── 上下文未知 / 1M "));
         prompt.context(1766);
-        assertEquals("── glm-4.6 ── 上下文剩余 998.2K（99%）/ 最大 1M token " + "─".repeat(5), prompt.rule());
+        assertTrue(prompt.rule().startsWith("── glm-4.6 ── 上下文剩余 99% · 998.2K / 1M "));
         assertEquals(59, FramedPrompt.displayWidth(prompt.rule()));
         // 百分比向下取整：只有完全没用时才是 100%。
         prompt.context(0);
-        assertTrue(prompt.rule().contains("上下文剩余 1M（100%）/ 最大 1M token"), prompt.rule());
+        assertTrue(prompt.rule().contains("上下文剩余 100% · 1M / 1M"), prompt.rule());
         // 配置的最大值比实际用量小时剩余显示为 0。
         prompt.context(2_000_000);
-        assertTrue(prompt.rule().contains("上下文剩余 0（0%）/ 最大 1M token"), prompt.rule());
+        assertTrue(prompt.rule().contains("上下文剩余 0% · 0 / 1M"), prompt.rule());
         prompt.context(-1);
-        assertTrue(prompt.rule().startsWith("── glm-4.6 ── 上下文最大 1M token "), prompt.rule());
+        assertTrue(prompt.rule().startsWith("── glm-4.6 ── 上下文未知 / 1M "), prompt.rule());
     }
 
     @Test
     void ruleShowsOnlyWhatIsConfigured() {
         FramedPrompt contextOnly = new FramedPrompt("> ", '-', () -> 50, null, 128_000);
         contextOnly.context(28_000);
-        assertEquals("-- 上下文剩余 100K（78%）/ 最大 128K token " + "-".repeat(6), contextOnly.rule());
+        assertTrue(contextOnly.rule().startsWith("-- 上下文剩余 78% . 100K / 128K"), contextOnly.rule());
         FramedPrompt modelOnly = new FramedPrompt("❯ ", '─', () -> 60, "glm-4.6", 0);
         modelOnly.context(1766);
         assertEquals("── glm-4.6 " + "─".repeat(48), modelOnly.rule());
@@ -101,10 +105,35 @@ class FramedPromptTest {
     }
 
     @Test
-    void narrowTerminalFallsBackToPlainRule() {
+    void narrowTerminalKeepsRemainingContext() {
         FramedPrompt prompt = new FramedPrompt("❯ ", '─', () -> 20, "glm-4.6", 1_000_000);
         prompt.context(0);
-        assertEquals("─".repeat(19), prompt.rule());
+        assertTrue(prompt.rule().contains("100%"), prompt.rule());
+    }
+
+    @Test
+    void namesShrinkFromTheMiddleLongerOneFirst() {
+        FramedPrompt prompt = new FramedPrompt("❯ ", '─', () -> 43, "abcdefghijklmnopqrst", 1_000_000,
+                () -> false, () -> "feature/very-long-branch-name");
+        prompt.context(0);
+        // 两者都长时平分；模型名短时保留原样，余下的列都给分支。
+        assertEquals("── abcd...rst ── git:feat...ame ── 100% ──", prompt.rule());
+        prompt.model("glm-4.6");
+        assertEquals("── glm-4.6 ── git:featu...-name ── 100% ──", prompt.rule());
+    }
+
+    @Test
+    void veryLongNamesDoNotSlowDownDrawing() {
+        int[] columns = {1};
+        FramedPrompt prompt = new FramedPrompt("❯ ", '─', () -> columns[0], "m".repeat(8000), 1_000_000,
+                () -> true, () -> "b".repeat(8000));
+        prompt.context(1766);
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
+            for (int width = 1; width <= 200; width++) {
+                columns[0] = width;
+                assertTrue(FramedPrompt.displayWidth(prompt.rule()) <= width - 1);
+            }
+        });
     }
 
     @Test
@@ -145,12 +174,12 @@ class FramedPromptTest {
         new ChatLoop(client, new ToolRegistry(List.of()), 3, "系统", AgentHooks.empty(), null, null, null, null,
                 null, null, commands, false, new FramedPrompt("❯ ", '─', () -> 60, "m", 1_000_000))
                 .run(new BufferedReader(new StringReader("一\n二\n三\n/reset\nexit\n")), new PrintWriter(buffer));
-        String unknown = "── m ── 上下文最大 1M token ";
+        String unknown = "── m ── 上下文未知 / 1M ";
         List<String> rules = buffer.toString().lines().filter(line -> line.startsWith("──"))
                 .map(line -> line.replaceAll("─+$", "")).toList();
         // 开始时未知；第二次响应没有 usage，不沿用上一次；/reset 替换历史后回到未知。
-        assertEquals(List.of(unknown, "── m ── 上下文剩余 998.2K（99%）/ 最大 1M token ", unknown,
-                "── m ── 上下文剩余 998K（99%）/ 最大 1M token ", unknown), rules);
+        assertEquals(List.of(unknown, "── m ── 上下文剩余 99% · 998.2K / 1M ", unknown,
+                "── m ── 上下文剩余 99% · 998K / 1M ", unknown), rules);
     }
 
     @Test
@@ -163,6 +192,72 @@ class FramedPromptTest {
         // 只有输入上方有分隔线；测试输入不回显，end 的换行直接结束提示符这一行，真实终端里它是输入下的空行。
         assertEquals(List.of("", RULE, "❯ ", "助手> 好的", "", RULE, "❯ ", "对话已结束。"),
                 buffer.toString().lines().toList());
+    }
+
+    @Test
+    void fullStatusAndContextSimplificationPrecedeNameTruncation() {
+        int[] columns = {100};
+        FramedPrompt prompt = new FramedPrompt("❯ ", '─', () -> columns[0], "model-name", 1_000_000,
+                () -> false, () -> "feature/branch");
+        prompt.context(1766);
+        assertTrue(prompt.rule().startsWith("── model-name ── git:feature/branch ── 上下文剩余 99% · 998.2K / 1M ──"));
+        columns[0] = 50;
+        assertTrue(prompt.rule().contains("model-name"));
+        assertTrue(prompt.rule().contains("git:feature/branch"));
+        assertTrue(prompt.rule().contains("99%"));
+        assertFalse(prompt.rule().contains("998.2K"));
+    }
+
+    @Test
+    void allWidthsRespectColumnLimitWithLongChineseAndEmojiNames() {
+        int[] columns = {100};
+        for (boolean auto : List.of(false, true)) {
+            FramedPrompt prompt = new FramedPrompt("❯ ", '─', () -> columns[0],
+                    "模型中文很长很长😀版本末尾", 1_000_000, () -> auto,
+                    () -> "功能/中文分支很长很长😀末尾");
+            for (int usage : new int[]{-1, 0, 1766, 2_000_000}) {
+                prompt.context(usage);
+                for (int width = 1; width <= 160; width++) {
+                    columns[0] = width;
+                    String line = prompt.rule();
+                    assertTrue(FramedPrompt.displayWidth(line) <= width - 1, width + ": " + line);
+                    if (width > 1) assertFalse(line.matches("─*"), line);
+                    assertFalse(line.contains("\u001b"));
+                    assertTrue(StandardCharsets.UTF_8.newEncoder().canEncode(line));
+                }
+            }
+        }
+        assertEquals("中文...末尾", FramedPrompt.shorten("中文中间很长末尾", 11));
+    }
+
+    @Test
+    void extremeWidthsPrioritizeApprovalThenRemainingThenModel() {
+        int[] columns = {13};
+        FramedPrompt prompt = new FramedPrompt("> ", '-', () -> columns[0], "model", 1000,
+                () -> true, () -> "branch");
+        prompt.context(100);
+        assertEquals("自动审批 90%", prompt.rule());
+        columns[0] = 9;
+        assertEquals("自动审批", prompt.rule());
+        columns[0] = 19;
+        assertEquals("自动审批 90% model", prompt.rule());
+    }
+
+    @Test
+    void fallbackUsesAsciiSeparatorsAndEscapesControlCharacters() {
+        for (Charset charset : List.of(StandardCharsets.US_ASCII, Charset.forName("GBK"))) {
+            FramedPrompt prompt = FramedPrompt.forTerminal(charset, () -> 120, "model", 1000,
+                    () -> false, () -> "branch");
+            prompt.context(100);
+            assertTrue(prompt.rule().startsWith("-- model -- git:branch -- 上下文剩余 90% . 900 / 1K --"));
+            assertFalse(prompt.rule().contains("─"));
+        }
+        FramedPrompt prompt = new FramedPrompt("> ", '-', () -> 120, "m\u001b[31m", 0,
+                () -> false, () -> "branch\nline");
+        assertFalse(prompt.rule().contains("\u001b"));
+        assertFalse(prompt.rule().contains("\n"));
+        assertFalse(new FramedPrompt("> ", '-', () -> 120, "m", 0, () -> false,
+                () -> { throw new IllegalStateException(); }).rule().contains("git:"));
     }
 
     private static String render(Consumer<PrintWriter> action) {

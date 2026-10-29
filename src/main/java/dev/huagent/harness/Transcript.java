@@ -1,5 +1,6 @@
 package dev.huagent.harness;
 
+import dev.huagent.prompt.TerminalText;
 import dev.huagent.tool.ToolCall;
 
 import java.io.PrintWriter;
@@ -89,7 +90,7 @@ public final class Transcript {
         separate(output);
         boolean failed = ToolTrace.failed(result);
         String subject = ToolTrace.subject(call);
-        output.println(paint(failed ? "31" : "32", bullet) + " " + paint("1", call.name())
+        output.println(paint(failed ? "31" : "32", bullet) + " " + paint("1", TerminalText.visible(call.name()))
                 + (subject.isEmpty() ? "" : " " + subject));
         output.println("  " + paint(failed ? "31" : "2", branch + "  " + ToolTrace.outcome(call.name(), result)));
         shown = true;

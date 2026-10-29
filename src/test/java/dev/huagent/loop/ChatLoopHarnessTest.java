@@ -185,11 +185,12 @@ class ChatLoopHarnessTest {
         model.script.add(ChatMessage.assistant(null, List.of(new ToolCall("c1", "echo", "{}"))));
         model.script.add(new ContextTooLargeException("模型接口返回 HTTP 400（上下文超长）"));
         model.script.add(ChatMessage.assistant("压缩后完成", List.of()));
+        model.script.add(ChatMessage.assistant("下一轮完成", List.of()));
 
         StringWriter out = run(loop(model, null, null, null, compactor, echoTool(executions)),
-                "做任务\nexit\n");
+                "做任务\n下一轮\nexit\n");
 
-        assertEquals(3, model.requests.size());
+        assertEquals(4, model.requests.size());
         assertEquals(1, executions.get());
         List<ChatMessage> third = model.requests.get(2);
         assertEquals(2, third.size());
@@ -198,6 +199,13 @@ class ChatLoopHarnessTest {
         assertTrue(third.get(1).content().contains("摘要：用户在测试。"));
         assertTrue(out.toString().contains("上下文超长"));
         assertTrue(out.toString().contains("助手> 压缩后完成"));
+        // 压缩后的历史成为新的对话状态：下一轮从摘要接着发，不再带压缩前的原文。
+        List<ChatMessage> fourth = model.requests.get(3);
+        assertEquals(List.of("system", "user", "assistant", "user"),
+                fourth.stream().map(ChatMessage::role).toList());
+        assertTrue(fourth.get(1).content().startsWith("[对话已压缩]"));
+        assertEquals("压缩后完成", fourth.get(2).content());
+        assertEquals("下一轮", fourth.get(3).content());
         // 完整记录已保存，被总结的原文可从记录找回。
         try (var files = java.nio.file.Files.list(dir)) {
             assertTrue(files.anyMatch(path -> path.getFileName().toString().startsWith("transcript-")));

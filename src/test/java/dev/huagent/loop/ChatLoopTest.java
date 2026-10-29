@@ -3,6 +3,7 @@ package dev.huagent.loop;
 import dev.huagent.app.ToolUseMain;
 import dev.huagent.config.AgentConfig;
 import dev.huagent.model.ChatMessage;
+import dev.huagent.model.EmptyReplyException;
 import dev.huagent.model.ModelClient;
 import dev.huagent.tool.ToolCall;
 import dev.huagent.tool.ToolDefinition;
@@ -128,11 +129,31 @@ class ChatLoopTest {
     @Test
     void emptyRepliesAreRetriedAtMostTwicePerTurn() throws Exception {
         List<List<ChatMessage>> requests = new ArrayList<>();
-        run("执行\n", (messages, definitions) -> {
+        String output = run("执行\n下一轮\n", (messages, definitions) -> {
             requests.add(messages);
-            return new ChatMessage("assistant", "");
+            return requests.size() <= 1 + ChatLoop.MAX_EMPTY_RETRIES
+                    ? new ChatMessage("assistant", "") : new ChatMessage("assistant", "好");
         }, 10);
-        assertEquals(1 + ChatLoop.MAX_EMPTY_RETRIES, requests.size());
+        assertEquals(2 + ChatLoop.MAX_EMPTY_RETRIES, requests.size());
+        assertTrue(output.contains("提示> 模型返回了空回复，本轮没有回答"), output);
+        // 重试用完后空消息也不记录：下一轮的请求里没有内容为空的 assistant 消息。
+        assertEquals(List.of("system", "user", "user"),
+                requests.getLast().stream().map(ChatMessage::role).toList());
+    }
+
+    @Test
+    void emptyReplyReportedByClientIsRetriedInsteadOfFailingTheTurn() throws Exception {
+        List<List<ChatMessage>> requests = new ArrayList<>();
+        String output = run("执行\n", (messages, definitions) -> {
+            requests.add(messages);
+            if (requests.size() == 1) {
+                throw new EmptyReplyException("模型响应缺少文本 content");
+            }
+            return new ChatMessage("assistant", "做完了");
+        }, 10);
+        assertEquals(2, requests.size());
+        assertFalse(output.contains("请求失败"), output);
+        assertTrue(output.contains("助手> 做完了"), output);
     }
 
     @Test

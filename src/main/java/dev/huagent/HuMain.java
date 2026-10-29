@@ -25,6 +25,7 @@ import dev.huagent.permission.AutoApprove;
 import dev.huagent.model.ModelClient;
 import dev.huagent.model.ModelClients;
 import dev.huagent.prompt.FramedPrompt;
+import dev.huagent.prompt.GitBranch;
 import dev.huagent.prompt.LineEditor;
 import dev.huagent.prompt.PromptStyle;
 import dev.huagent.prompt.Splash;
@@ -201,7 +202,7 @@ public final class HuMain {
     static PromptStyle promptStyle(Console console, AgentConfig config, IntSupplier columns, AutoApprove autoApprove) {
         return console == null ? PromptStyle.plain()
                 : FramedPrompt.forTerminal(console.charset(), columns, config.model(), config.maxContextTokens(),
-                        autoApprove::enabled);
+                        autoApprove::enabled, new GitBranch(config.workDirectory()));
     }
 
     /**

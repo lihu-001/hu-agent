@@ -239,7 +239,18 @@ class OpenAiClientTest {
     void rejectsIncompleteResponsesBeforeCommandsCanRun(String reason) {
         response = "{\"choices\":[{\"finish_reason\":\"" + reason
                 + "\",\"message\":{\"role\":\"assistant\",\"content\":\"incomplete\"}}]}";
-        assertThrows(IOException.class, () -> client(baseUrl, Duration.ofSeconds(5)).complete(List.of(), List.of()));
+        IOException error = assertThrows(IOException.class,
+                () -> client(baseUrl, Duration.ofSeconds(5)).complete(List.of(), List.of()));
+        assertFalse(error instanceof EmptyReplyException, "不完整的响应不当作空回复重试");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"null", "\"\"", "\"  \""})
+    void emptyReplyIsReportedSeparatelySoChatLoopCanRetry(String content) {
+        response = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":"
+                + content + "}}]}";
+        assertThrows(EmptyReplyException.class,
+                () -> client(baseUrl, Duration.ofSeconds(5)).complete(List.of(), List.of()));
     }
 
     @Test

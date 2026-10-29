@@ -33,10 +33,11 @@ class AgentConfigTest {
         AgentConfig config = AgentConfig.load(write("openai.model=test-model\nopenai.api-key=test-secret\n"));
         assertEquals("https://api.openai.com/v1", config.baseUrl());
         assertEquals(Path.of("."), config.workDirectory());
-        assertEquals(200, config.maxModelCalls());
+        // 教程各阶段的入口保持原来的默认值；hu 的默认值见 huFallsBackToLegacyModelKeysAndToleratesMissingConfigFile。
+        assertEquals(10, config.maxModelCalls());
         assertEquals(30, config.shellTimeout().toSeconds());
-        assertEquals(30000, config.maxOutputChars());
-        assertEquals(1_200_000, config.compactThresholdChars(), "按默认最大上下文 100 万 token 换算");
+        assertEquals(12000, config.maxOutputChars());
+        assertEquals(50000, config.compactThresholdChars());
         assertEquals(3, config.compactKeepToolResults());
         assertEquals(600, config.backgroundTimeout().toSeconds());
         assertEquals(15, config.schedulerPollSeconds());
@@ -208,6 +209,8 @@ class AgentConfigTest {
         AgentConfig fresh = AgentConfig.load(missing, modelFile, Map.of());
         assertEquals("new", fresh.model());
         assertEquals(200, fresh.maxModelCalls(), "config.properties 缺失时其他设置取默认值");
+        assertEquals(30000, fresh.maxOutputChars());
+        assertEquals(1_200_000, fresh.compactThresholdChars(), "按默认最大上下文 100 万 token 换算");
     }
 
     @Test

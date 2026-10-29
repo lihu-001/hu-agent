@@ -249,7 +249,16 @@ class AnthropicClientTest {
     void rejectsIncompleteResponsesBeforeCommandsCanRun(String reason) {
         response = "{\"role\":\"assistant\",\"stop_reason\":\"" + reason
                 + "\",\"content\":[{\"type\":\"text\",\"text\":\"incomplete\"}]}";
-        assertThrows(IOException.class, () -> client(root, false).complete(List.of(), List.of()));
+        IOException error = assertThrows(IOException.class, () -> client(root, false).complete(List.of(), List.of()));
+        assertFalse(error instanceof EmptyReplyException, "不完整的响应不当作空回复重试");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"[]", "[{\"type\":\"text\",\"text\":\"  \"}]",
+            "[{\"type\":\"thinking\",\"thinking\":\"想一想\"}]"})
+    void emptyReplyIsReportedSeparatelySoChatLoopCanRetry(String content) {
+        response = "{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":" + content + "}";
+        assertThrows(EmptyReplyException.class, () -> client(root, false).complete(List.of(), List.of()));
     }
 
     @ParameterizedTest

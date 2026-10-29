@@ -14,7 +14,7 @@
 | 位置 | 内容 |
 | --- | --- |
 | `HuMain` | hu 命令的入口：读配置、组装会话、启动页、终端标题 |
-| `prompt/` | 终端界面。`FramedPrompt` 是输入框上方那条分隔线（状态栏：自动审批标记、模型名、上下文剩余与最大值）；`Splash` 是启动页；`LineEditor`、`SlashMenu`、`SlashCompleter` 负责输入行与斜杠命令列表；`TerminalTitle` 是终端标题 |
+| `prompt/` | 终端界面。`FramedPrompt` 是输入框上方那条分隔线（状态栏：自动审批标记、模型名、Git 分支、上下文剩余与最大值）；`Splash` 是启动页；`LineEditor`、`SlashMenu`、`SlashCompleter` 负责输入行与斜杠命令列表；`TerminalTitle` 是终端标题 |
 | `loop/ChatLoop` | 对话循环：请求模型、执行工具、每轮调用上限、终端显示 |
 | `harness/` | 显示与运行辅助：`Transcript`（回复与工具调用在终端上的分段样式：`●` 标记、`⎿` 结果行、段间空行）、`ToolTrace`（工具调用摘要的内容）、`TurnInterrupt`（Esc / Ctrl+C 中断）、`EventHub` |
 | `tool/`、`tool/file/` | 基础工具：shell、read_file、write_file、edit_file、glob、grep |
@@ -29,5 +29,6 @@
 
 - 注释、终端文字和提示词都用中文；沿用周围代码的命名、注释密度和写法。
 - 项目按教程阶段演进：旧的构造器和入口保持上一阶段的行为，需要新参数时新增构造器或可选字段（`null` 表示保持原样），不要改变旧入口的行为。
+- 状态栏的 Git 信息由 `HuMain` 按 `config.workDirectory()` 注入 `GitBranch` supplier，每次绘制直接读取 Git 元数据；旧 `FramedPrompt` 构造器不探测 Git。已知终端宽度时状态栏最多占列数减一。
 - 测试会断言终端输出和工具结果的原文，改了文字要同步更新测试。
 - 行为有变化时同步更新 README.md 和 `src/main/resources/hu-agent/*.example.properties`。

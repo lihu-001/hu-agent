@@ -36,7 +36,8 @@ public final class ToolTrace {
     /** 一行摘要，如 "工具> grep 上下文剩余 · 找到 1 个文件"、"工具> shell · 退出码 0，12 行输出"。 */
     public static String summary(ToolCall call, String result) {
         String subject = subject(call);
-        return "工具> " + call.name() + (subject.isEmpty() ? "" : " " + subject) + " · " + outcome(call.name(), result);
+        return "工具> " + TerminalText.visible(call.name()) + (subject.isEmpty() ? "" : " " + subject) + " · "
+                + outcome(call.name(), result);
     }
 
     /** 免确认的只读工具显示路径或模式；其余工具的参数已经在确认行里显示过（或不值得显示），返回空串。 */

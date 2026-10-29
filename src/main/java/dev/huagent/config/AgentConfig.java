@@ -19,10 +19,13 @@ public record AgentConfig(ModelConfig modelConfig, Path workDirectory,
                           int compactThresholdChars, int compactKeepToolResults, Duration backgroundTimeout,
                           int schedulerPollSeconds, boolean teamEnabled, int goalBlockCap,
                           String goalEvaluatorModel) {
-    /** 每轮模型调用上限只是防止失控的安全网（Claude Code 交互模式不设上限），正常任务碰不到。 */
+    /** hu 的每轮模型调用上限：只是防止失控的安全网（Claude Code 交互模式不设上限），正常任务碰不到。 */
     public static final int DEFAULT_MAX_MODEL_CALLS = 200;
-    /** 与 Claude Code 的 Bash 输出上限相同。 */
+    /** hu 的 shell 输出上限，与 Claude Code 的 Bash 输出上限相同。 */
     public static final int DEFAULT_MAX_OUTPUT_CHARS = 30000;
+    /** 教程各阶段的每轮模型调用上限与 shell 输出上限。 */
+    public static final int TUTORIAL_MAX_MODEL_CALLS = 10;
+    public static final int TUTORIAL_MAX_OUTPUT_CHARS = 12000;
     /** 教程各阶段的压缩阈值；hu 没有配置时按模型最大上下文换算，见 defaultCompactThreshold。 */
     public static final int DEFAULT_COMPACT_THRESHOLD_CHARS = 50000;
     public static final int DEFAULT_COMPACT_KEEP_TOOL_RESULTS = 3;
@@ -123,7 +126,7 @@ public record AgentConfig(ModelConfig modelConfig, Path workDirectory,
             }
             properties = new Properties();
         }
-        return from(properties, ModelConfig.legacy(properties, environment));
+        return from(properties, ModelConfig.legacy(properties, environment), false);
     }
 
     /**
@@ -134,7 +137,7 @@ public record AgentConfig(ModelConfig modelConfig, Path workDirectory,
         Properties properties = Objects.requireNonNullElseGet(PropertiesFile.read(configFile), Properties::new);
         ModelConfig model = Files.exists(modelFile) ? ModelConfig.load(modelFile, environment)
                 : ModelConfig.legacy(properties, environment);
-        return from(properties, model);
+        return from(properties, model, true);
     }
 
     /** hu 首次运行是否需要引导配置模型：model.properties、旧版的 openai.model 与环境变量都没有提供模型时需要。 */
@@ -155,13 +158,17 @@ public record AgentConfig(ModelConfig modelConfig, Path workDirectory,
                 Math.max(DEFAULT_COMPACT_THRESHOLD_CHARS, maxContextTokens * 6L / 5));
     }
 
-    private static AgentConfig from(Properties properties, ModelConfig model) {
+    /** hu 为 false 时（教程各阶段）没有配置的项保持上一阶段的默认值，不随 hu 的默认值变化。 */
+    private static AgentConfig from(Properties properties, ModelConfig model, boolean hu) {
         return new AgentConfig(model,
                 Path.of(required(properties, "agent.work-dir", ".", HuHome.CONFIG_FILE)),
-                positiveInt(properties, "agent.max-model-calls", DEFAULT_MAX_MODEL_CALLS),
+                positiveInt(properties, "agent.max-model-calls",
+                        hu ? DEFAULT_MAX_MODEL_CALLS : TUTORIAL_MAX_MODEL_CALLS),
                 Duration.ofSeconds(positiveInt(properties, "shell.timeout-seconds", 30)),
-                positiveInt(properties, "shell.max-output-chars", DEFAULT_MAX_OUTPUT_CHARS),
-                positiveInt(properties, "compact.threshold-chars", defaultCompactThreshold(model.maxContextTokens())),
+                positiveInt(properties, "shell.max-output-chars",
+                        hu ? DEFAULT_MAX_OUTPUT_CHARS : TUTORIAL_MAX_OUTPUT_CHARS),
+                positiveInt(properties, "compact.threshold-chars",
+                        hu ? defaultCompactThreshold(model.maxContextTokens()) : DEFAULT_COMPACT_THRESHOLD_CHARS),
                 positiveInt(properties, "compact.keep-tool-results", DEFAULT_COMPACT_KEEP_TOOL_RESULTS),
                 Duration.ofSeconds(positiveInt(properties, "background.timeout-seconds",
                         DEFAULT_BACKGROUND_TIMEOUT_SECONDS)),

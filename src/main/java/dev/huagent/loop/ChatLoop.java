@@ -17,6 +17,7 @@ import dev.huagent.harness.TurnInterrupt;
 import dev.huagent.hook.AgentHooks;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.model.ContextTooLargeException;
+import dev.huagent.model.EmptyReplyException;
 import dev.huagent.model.ModelClient;
 import dev.huagent.model.ModelSelection;
 import dev.huagent.model.ModelUnavailableException;
@@ -447,15 +448,18 @@ public final class ChatLoop {
                         if (StrUtil.isNotBlank(answer.content())) {
                             print(output, out -> transcript.reply(out, answer.content()));
                         }
-                        if (answer.toolCalls().isEmpty() && StrUtil.isBlank(answer.content()) && !synthetic
-                                && step < maxModelCalls && emptyRetries < MAX_EMPTY_RETRIES) {
+                        if (answer.toolCalls().isEmpty() && StrUtil.isBlank(answer.content())) {
                             // 空回复（没有文字也没有工具调用）多半是模型中途停住了：不记录这条空消息，
-                            // 提醒附在上一条消息末尾（不新增消息角色），再请求一次。
+                            // 部分接口也不接受没有内容的 assistant 消息。
                             request.removeLast();
-                            appendToLast(request, EMPTY_REPLY_NOTICE);
-                            emptyRetries++;
-                            detail(output, "提示> 模型返回了空回复，已提醒它继续");
-                            continue;
+                            if (!synthetic && step < maxModelCalls && emptyRetries < MAX_EMPTY_RETRIES) {
+                                // 提醒附在上一条消息末尾（不新增消息角色），再请求一次。
+                                appendToLast(request, EMPTY_REPLY_NOTICE);
+                                emptyRetries++;
+                                detail(output, "提示> 模型返回了空回复，已提醒它继续");
+                                continue;
+                            }
+                            output.println("提示> 模型返回了空回复，本轮没有回答；可以输入“继续”再试。");
                         }
                         if (answer.toolCalls().isEmpty()) {
                             history = request;
@@ -615,8 +619,7 @@ public final class ChatLoop {
             try {
                 // 响应不带 usage 时用量记为未知，不沿用上一次请求的数字。
                 contextTokens = -1;
-                return new Recovery(client.complete(List.copyOf(sent), definitions, tokens -> contextTokens = tokens),
-                        request, sent, false);
+                return new Recovery(complete(sent, definitions), request, sent, reactiveCompacted);
             } catch (ModelUnavailableException e) {
                 attempt++;
                 if (retryPolicy == null || attempt > retryPolicy.maxRetries()) {
@@ -642,6 +645,16 @@ public final class ChatLoop {
                 request = prepared.history();
                 reactiveCompacted = true;
             }
+        }
+    }
+
+    /** 空回复不算请求失败：按没有文字也没有工具调用的回复返回，由调用方提醒模型继续（见 MAX_EMPTY_RETRIES）。 */
+    private ChatMessage complete(List<ChatMessage> sent, List<ToolDefinition> definitions)
+            throws IOException, InterruptedException {
+        try {
+            return client.complete(List.copyOf(sent), definitions, tokens -> contextTokens = tokens);
+        } catch (EmptyReplyException e) {
+            return ChatMessage.assistant(null, List.of());
         }
     }
 

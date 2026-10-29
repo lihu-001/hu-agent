@@ -113,7 +113,7 @@ class ModelCommandTest {
             assertTrue(text.contains("状态> 模型 provider/after，目标判断器 "
                     + (independentJudge ? "judge" : "provider/after")), text);
             // 切换后、下一次请求前，旧模型的 usage 被清除，显示新模型与最大上下文。
-            assertTrue(text.contains("-- provider/after -- 上下文最大 10K token"), text);
+            assertTrue(text.contains("-- provider/after -- 上下文未知 / 10K"), text);
             assertFalse(text.contains("hidden-key"), text);
             assertEquals("before", config.model(), "会话切换不改启动配置");
             // 教程入口没有 ModelDefaults：只在本次会话生效；测试服务器不提供 /models。

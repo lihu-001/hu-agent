@@ -262,8 +262,11 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
                 // thinking 等其他内容块不进入历史。
             }
             String answer = texts.isEmpty() ? null : String.join("\n\n", texts);
-            if (toolCalls.isEmpty() && (answer == null || "tool_use".equals(stopReason))) {
+            if (toolCalls.isEmpty() && "tool_use".equals(stopReason)) {
                 throw new IOException("模型响应缺少文本 content");
+            }
+            if (toolCalls.isEmpty() && answer == null) {
+                throw new EmptyReplyException("模型响应缺少文本 content");
             }
             return ChatMessage.assistant(answer, toolCalls);
         } catch (RuntimeException e) {

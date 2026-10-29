@@ -41,6 +41,16 @@ class TranscriptTest {
     }
 
     @Test
+    void toolNameFromModelIsEscapedBeforeReachingTerminal() {
+        ToolCall forged = new ToolCall("x", "x\u001b]0;pwned\u0007", "{}");
+        for (Transcript transcript : List.of(Transcript.plain(), Transcript.marked("●", "⎿", true))) {
+            List<String> lines = render(output -> transcript.tool(output, forged, "工具错误：未知工具"));
+            assertFalse(String.join("\n", lines).contains("\u001b]"), lines.toString());
+            assertTrue(lines.get(0).contains("x\\u001b]0;pwned\\u0007"), lines.toString());
+        }
+    }
+
+    @Test
     void markedSeparatesRepliesAndToolsIntoBlocks() {
         Transcript transcript = Transcript.marked("●", "⎿", false);
         assertEquals(List.of(

@@ -193,8 +193,11 @@ public final class OpenAiClient implements ModelClient, ModelSelection {
                 }
             }
             String answer = (String) content;
-            if (toolCalls.isEmpty() && (StrUtil.isBlank(answer) || "tool_calls".equals(finishReason))) {
+            if (toolCalls.isEmpty() && "tool_calls".equals(finishReason)) {
                 throw new IOException("模型响应缺少文本 content");
+            }
+            if (toolCalls.isEmpty() && StrUtil.isBlank(answer)) {
+                throw new EmptyReplyException("模型响应缺少文本 content");
             }
             return ChatMessage.assistant(answer, toolCalls);
         } catch (RuntimeException e) {
