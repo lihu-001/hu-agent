@@ -469,7 +469,8 @@ public final class ChatLoop {
                         request.add(answer);
                         // 与 Claude Code 相同，与工具调用一起返回的中间说明也显示，用户能看到模型打算做什么。
                         if (StrUtil.isNotBlank(answer.content())) {
-                            print(output, out -> transcript.reply(out, answer.content()));
+                            boolean last = answer.toolCalls().isEmpty();
+                            print(output, out -> transcript.reply(out, answer.content(), last));
                         }
                         if (answer.toolCalls().isEmpty() && StrUtil.isBlank(answer.content())) {
                             // 空回复（没有文字也没有工具调用）多半是模型中途停住了：不记录这条空消息，

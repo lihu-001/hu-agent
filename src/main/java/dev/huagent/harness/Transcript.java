@@ -23,6 +23,7 @@ import java.util.regex.Pattern;
  * color 为 true 时（终端能解释 ANSI）工具的 ● 为绿色、失败时为红色，工具名加粗，结果变暗、失败时为红色。
  * 需要确认的工具在执行前先空行（beforeTool），确认行与随后的摘要同属一段。
  * marked 的左边距与折行由行编辑器套用 margin（见 Margin）：其他顶格的输出补两列，长行折行后与正文对齐。
+ * headless 是 hu -p 的样式：与 plain 相同，但不显示没有工具调用的回答（最终回答），hu -p 把它单独写到标准输出。
  */
 public final class Transcript {
     private static final String PLAIN_REPLY = "助手> ";
@@ -33,24 +34,30 @@ public final class Transcript {
     private final String bullet;
     private final String branch;
     private final boolean color;
+    private final boolean headless;
     /** 本轮已经显示过一段：下一段之前要空一行。 */
     private boolean shown;
     /** 已经为下一段空过行（beforeTool），摘要不再空行。 */
     private boolean separated;
 
-    private Transcript(boolean marked, String bullet, String branch, boolean color) {
+    private Transcript(boolean marked, String bullet, String branch, boolean color, boolean headless) {
         this.marked = marked;
         this.bullet = bullet;
         this.branch = branch;
         this.color = color;
+        this.headless = headless;
     }
 
     public static Transcript plain() {
-        return new Transcript(false, null, null, false);
+        return new Transcript(false, null, null, false, false);
     }
 
     public static Transcript marked(String bullet, String branch, boolean color) {
-        return new Transcript(true, bullet, branch, color);
+        return new Transcript(true, bullet, branch, color, false);
+    }
+
+    public static Transcript headless() {
+        return new Transcript(false, null, null, false, true);
     }
 
     /** 按终端字符集选择符号：能编码 ● 与 ⎿ 时用它们，否则（如 GBK 控制台，● 按两列显示会错位）改用 * 与 -。 */
@@ -78,6 +85,16 @@ public final class Transcript {
         }
         shown = true;
         separated = false;
+    }
+
+    /**
+     * 模型一次回答里的文字；last 为 true 表示这次回答没有工具调用，是本轮的最终回答（Goal Gate 要求续跑时除外）。
+     * headless 不显示最终回答，其余样式与 reply(output, text) 相同。
+     */
+    public void reply(PrintWriter output, String text, boolean last) {
+        if (!(headless && last)) {
+            reply(output, text);
+        }
     }
 
     /**

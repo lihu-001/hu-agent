@@ -41,6 +41,20 @@ class TranscriptTest {
     }
 
     @Test
+    void headlessHidesOnlyTheFinalReply() {
+        Transcript transcript = Transcript.headless();
+        assertEquals(List.of("助手> 先看看", "工具> read_file src/A.java · 2 行"), render(output -> {
+            transcript.startTurn();
+            transcript.reply(output, "先看看", false);
+            transcript.beforeTool(output);
+            transcript.tool(output, READ, "     1\ta\n     2\tb");
+            transcript.reply(output, "看完了", true);
+        }));
+        // 其他样式照常显示最终回答。
+        assertEquals(List.of("助手> 看完了"), render(output -> Transcript.plain().reply(output, "看完了", true)));
+    }
+
+    @Test
     void toolNameFromModelIsEscapedBeforeReachingTerminal() {
         ToolCall forged = new ToolCall("x", "x\u001b]0;pwned\u0007", "{}");
         for (Transcript transcript : List.of(Transcript.plain(), Transcript.marked("●", "⎿", true))) {

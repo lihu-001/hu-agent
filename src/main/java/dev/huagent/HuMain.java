@@ -16,6 +16,7 @@ import dev.huagent.harness.EventHub;
 import dev.huagent.harness.HarnessOptions;
 import dev.huagent.harness.InputImages;
 import dev.huagent.harness.ModelRetryPolicy;
+import dev.huagent.harness.PrintMode;
 import dev.huagent.harness.Transcript;
 import dev.huagent.harness.TurnInterrupt;
 import dev.huagent.hook.HookTrustStore;
@@ -41,12 +42,14 @@ import java.io.Console;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -74,6 +77,23 @@ public final class HuMain {
                 ? new PrintWriter(System.out, true, StandardCharsets.UTF_8) : console.writer();
         SessionFlags flags = sessionFlags(args);
         if (flags == null) {
+            PrintFlags print;
+            try {
+                print = printFlags(args);
+            } catch (IllegalArgumentException e) {
+                PrintWriter errors = progress(console);
+                errors.println("hu: " + e.getMessage() + "；用法见 hu --help。");
+                errors.flush();
+                System.exit(2);
+                return;
+            }
+            if (print != null) {
+                int status = print(print, console, output);
+                output.flush();
+                // 一次性运行：会话已结束，不等模型接口的连接池等残留线程。
+                System.exit(status);
+                return;
+            }
             int code = options(args, output);
             output.flush();
             if (code != 0) {
@@ -187,9 +207,8 @@ public final class HuMain {
                 McpManager.Starter.of(projectDirectory, McpTrustStore.userStore(), System.getenv()),
                 options, WorkflowStarter.of(config), GoalStarter.of(evaluator, config.goalBlockCap()), commands);
         List<String> servers = session.mcp().servers();
-        String location = "模型 " + config.model() + "（" + config.modelConfig().provider().label() + "）· 工作目录 "
-                + config.workDirectory().toAbsolutePath().normalize();
-        output.println(splash == null ? "hu-agent " + HuVersion.current() + " · " + location : location);
+        output.println(splash == null ? "hu-agent " + HuVersion.current() + " · " + location(config)
+                : location(config));
         output.println((completion ? "输入 / 列出命令，Tab 或 ↑↓ 选择，运行中按 Esc 中断" : "输入 /help 查看命令")
                 + "，exit 退出。"
                 + (servers.isEmpty() ? "" : "MCP 已连接：" + String.join("、", servers) + "。")
@@ -200,6 +219,85 @@ public final class HuMain {
                     + "硬拒绝规则与工作目录检查仍然生效；/auto off 关闭，hu --no-auto 启动时不开启。");
         }
         session.run();
+    }
+
+    private static String location(AgentConfig config) {
+        return "模型 " + config.model() + "（" + config.modelConfig().provider().label() + "）· 工作目录 "
+                + config.workDirectory().toAbsolutePath().normalize();
+    }
+
+    /**
+     * hu -p：非交互地执行一个任务后退出，用于脚本与评测框架（与 Claude Code 的 -p 相同）。返回进程退出码：
+     * 0 得到最终回答，1 未配置模型、配置错误、请求失败或没有最终回答，2 没有任务。
+     * 最终回答写到 result（标准输出）；过程写到标准错误：工具调用摘要、中间说明、自动批准记录、提示与错误，
+     * -d 时与交互会话的调试输出相同（最终回答也在其中）。没有启动页、提示符和按键中断；首次配置引导不运行。
+     * 需要确认的操作在自动审批模式下自动批准，--no-auto 时没有人回答，一律拒绝；没有信任记录的项目级 Hook 与
+     * MCP server 同样不启用（先在交互会话中确认）。一轮结束会话就结束，所以不开团队模式、不启动定时计划。
+     */
+    static int print(PrintFlags flags, Console console, PrintWriter result) {
+        PrintWriter progress = progress(console);
+        try {
+            // 交互终端上没给任务时不等输入（与 Claude Code 相同）；管道或重定向时读到输入结束。
+            String task = flags.task() != null ? flags.task() : console == null ? readTask() : "";
+            if (task.isBlank()) {
+                progress.println("hu: 没有任务：在 -p 后给出任务，或不带任务参数、从标准输入传入。");
+                return 2;
+            }
+            Path configFile = HuHome.configFile();
+            Path modelFile = HuHome.modelFile();
+            Map<String, String> environment = System.getenv();
+            if (!AgentConfig.modelConfigured(configFile, modelFile, environment)) {
+                progress.println("hu: 还没有配置模型接口：先运行一次 hu 按提示填写，或设置环境变量 HU_MODEL 与 HU_API_KEY"
+                        + "（接口类型与地址用 HU_PROVIDER、HU_BASE_URL）。");
+                return 1;
+            }
+            AgentConfig config = AgentConfig.load(configFile, modelFile, environment).withTeamEnabled(false);
+            ModelClient client = ModelClients.create(config.modelConfig(), REQUEST_TIMEOUT);
+            ModelClient evaluator = config.goalEvaluatorModel() == null ? client
+                    : ModelClients.create(config.modelConfig().withModel(config.goalEvaluatorModel()), REQUEST_TIMEOUT);
+            Path projectDirectory = ProjectDirectory.resolve();
+            AutoApprove autoApprove = new AutoApprove(flags.autoApprove());
+            PrintMode mode = new PrintMode(task);
+            String projectContext = ProjectContext.render(config.workDirectory(), HuHome.resolve(), LocalDate.now());
+            // 不画提示符；权限确认与交互会话被重定向时相同，不带颜色。
+            HarnessOptions options = new HarnessOptions(new EventHub(),
+                    new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES), mode.input(), flags.debug(),
+                    out -> { }, confirmPrompt(null, flags.debug()), autoApprove, new TurnInterrupt(), projectContext,
+                    flags.debug() ? Transcript.plain() : Transcript.headless(), new InputImages());
+            ModelDefaults defaults = ModelDefaults.locate(configFile, modelFile, environment);
+            TeamMain.Session session = TeamMain.createSession(config, client, PrintMode.noAnswers(), progress,
+                    projectDirectory, List.of(mode), HookTrustStore.userStore(), new TodoList(),
+                    ZoneId.systemDefault(), Clock.systemDefaultZone(), false, TeamManager.DEFAULT_IDLE_SCAN,
+                    McpManager.Starter.of(projectDirectory, McpTrustStore.userStore(), environment),
+                    options, WorkflowStarter.of(config), GoalStarter.of(evaluator, config.goalBlockCap()),
+                    CommandStarter.builtin(defaults, autoApprove));
+            if (flags.debug()) {
+                progress.println("hu-agent " + HuVersion.current() + " · " + location(config));
+            }
+            session.run();
+            return mode.finish(result, progress);
+        } catch (IllegalArgumentException e) {
+            progress.println("配置错误：" + e.getMessage());
+            return 1;
+        } catch (IOException e) {
+            progress.println("Hook 或 MCP 配置读取、技能、记忆、任务或计划目录扫描、工作目录初始化或任务读取失败（"
+                    + e.getClass().getSimpleName() + "），未完成任务。");
+            return 1;
+        } finally {
+            progress.flush();
+        }
+    }
+
+    /** hu -p 的过程输出（标准错误）：字符集与标准输出相同，交互终端用终端字符集，被重定向时用 UTF-8。 */
+    private static PrintWriter progress(Console console) {
+        return new PrintWriter(System.err, true, console == null ? StandardCharsets.UTF_8 : console.charset());
+    }
+
+    /** hu -p 没有任务参数时，从标准输入（管道或重定向的文件）读到结束。 */
+    private static String readTask() throws IOException {
+        StringWriter text = new StringWriter();
+        new InputStreamReader(System.in, StandardCharsets.UTF_8).transferTo(text);
+        return text.toString().strip();
     }
 
     /**
@@ -258,6 +356,52 @@ public final class HuMain {
         return new SessionFlags(debug, autoApprove);
     }
 
+    /** hu -p 的选项：task 为 null 时从标准输入读取任务；debug 与 autoApprove 与交互会话的含义相同。 */
+    record PrintFlags(String task, boolean debug, boolean autoApprove) {
+    }
+
+    /**
+     * 参数中有 -p / --print 时返回非交互运行的选项，没有时返回 null（交给 options）。
+     * 其余参数是会话选项（-d、--auto、--no-auto）或任务文字：多个任务参数以空格连接，-- 之后的参数都是任务文字
+     * （任务以 - 开头时使用）；没有任务参数或任务只是 - 时从标准输入读取。有 -p 又有其他选项时抛出 IllegalArgumentException。
+     */
+    static PrintFlags printFlags(String[] args) {
+        boolean print = false;
+        boolean debug = false;
+        boolean autoApprove = true;
+        boolean literal = false;
+        String unknown = null;
+        List<String> words = new ArrayList<>();
+        for (String arg : args) {
+            if (literal) {
+                words.add(arg);
+                continue;
+            }
+            switch (arg) {
+                case "-p", "--print" -> print = true;
+                case "-d", "--debug" -> debug = true;
+                case "--auto" -> autoApprove = true;
+                case "--no-auto" -> autoApprove = false;
+                case "--" -> literal = true;
+                default -> {
+                    if (arg.length() > 1 && arg.startsWith("-")) {
+                        unknown = unknown == null ? arg : unknown;
+                    } else {
+                        words.add(arg);
+                    }
+                }
+            }
+        }
+        if (!print) {
+            return null;
+        }
+        if (unknown != null) {
+            throw new IllegalArgumentException("-p 不支持的参数：" + unknown);
+        }
+        String task = String.join(" ", words);
+        return new PrintFlags(words.isEmpty() || task.equals("-") ? null : task, debug, autoApprove);
+    }
+
     /** 返回进程退出码：0 已处理，2 参数错误。 */
     static int options(String[] args, PrintWriter output) {
         String option = args[0];
@@ -283,6 +427,11 @@ public final class HuMain {
         return """
                 用法：hu [选项]
                   在当前目录启动 hu-agent 交互会话；进入后输入 /help 查看命令，exit 退出。
+                      hu -p [-d] [--no-auto] [--] <任务>
+                  非交互地执行一个任务后退出，用于脚本与评测：最终回答写到标准输出，过程写到标准错误。
+                  没有任务参数（或任务为 -）时从标准输入读取；任务以 - 开头时放在 -- 之后。
+                  退出码：0 得到最终回答，1 失败或没有最终回答，2 参数错误或没有任务。
+                  需要确认的操作按自动审批处理，--no-auto 时一律拒绝；团队模式与定时计划不启用。
                       hu update [--debug | -d] [--local | --pkg <安装包>]
                   更新到最新发布版（等同重新运行安装命令）；--local 在 hu-agent 源码目录中
                   构建并安装当前源码（需要 JDK 25）；--pkg 安装本地的 hu-agent.zip / hu-agent.tar.gz
@@ -296,6 +445,7 @@ public final class HuMain {
                                    Shell、写文件、MCP 工具等自动批准，硬拒绝规则与工作目录
                                    检查仍然生效；会话中用 /auto 切换；可与 -d 同时使用
                       --auto       开启自动审批模式（默认已开启，保留兼容）
+                  -p, --print      非交互运行一个任务（见上）
                   -h, --help       显示本帮助
                   -v, --version    显示版本
 
