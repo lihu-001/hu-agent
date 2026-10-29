@@ -15,10 +15,12 @@ done
 app_dir=$(cd "$(dirname "$self")/.." && pwd)
 hu_home=$(cd "$app_dir/.." && pwd)
 
-# hu update：重新运行安装脚本。默认从 GitHub 取安装脚本、装最新发布版；--local 构建并安装当前目录的源码；
+# hu update：重新运行安装脚本。默认从 GitHub 取安装脚本、装最新发布版；--local [<源码目录>] 构建并安装
+# 该目录（默认当前目录）的源码；
 # --pkg 安装本地的 hu-agent.tar.gz（或其所在目录）。后两者通过 HU_PACKAGE 传入应用包，
 # --pkg 用随包安装在 app/ 下的安装脚本，不联网。
-# 默认只显示更新状态，失败时显示一行原因；--debug / -d（放在来源参数前）显示完整的构建与安装输出。
+# 默认成功时只显示更新状态；失败时显示构建与安装的输出，最后一行是失败原因。
+# --debug / -d（放在来源参数前）边执行边显示这些输出，成功时也显示。
 # 安装会整体替换 app 目录，本脚本与安装脚本已经打开的是旧文件，继续执行不受影响。
 if [ "${1:-}" = update ]; then
     export HU_HOME="$hu_home"
@@ -32,11 +34,17 @@ if [ "${1:-}" = update ]; then
     case ${1:-} in
         --debug | -d) update_debug=1; shift ;;
     esac
+    update_usage='hu: 用法：hu update [--debug | -d] [--local [<源码目录>] | --pkg <应用包>]'
     case $# in
         0) ;;
-        1) [ "$1" = --local ] || { echo 'hu: 用法：hu update [--debug | -d] [--local | --pkg <应用包>]' >&2; exit 2; } ;;
-        2) [ "$1" = --pkg ] && [ -n "$2" ] || { echo 'hu: 用法：hu update [--debug | -d] [--local | --pkg <应用包>]' >&2; exit 2; } ;;
-        *) echo 'hu: 用法：hu update [--debug | -d] [--local | --pkg <应用包>]' >&2; exit 2 ;;
+        1) [ "$1" = --local ] || { echo "$update_usage" >&2; exit 2; } ;;
+        # --local 后以 - 开头的是放错位置的选项，不当作目录。
+        2) case $1 in
+               --pkg) [ -n "$2" ] ;;
+               --local) [ -n "$2" ] && [ "${2#-}" = "$2" ] ;;
+               *) false ;;
+           esac || { echo "$update_usage" >&2; exit 2; } ;;
+        *) echo "$update_usage" >&2; exit 2 ;;
     esac
     # 子 shell 保持遇错即停，外层只负责简洁状态和退出码。
     run_update() (
@@ -50,13 +58,29 @@ if [ "${1:-}" = update ]; then
         printf '%s\n' "$installer" | sh
         exit
     fi
-    if [ $# -eq 1 ] && [ "$1" = --local ]; then
-        if [ ! -f src/dist/bin/hu ] || [ ! -f install.sh ]; then
-            echo "hu: 请在 hu-agent 源码目录中运行 hu update --local" >&2
+    if [ "$1" = --local ]; then
+        # 子 shell 里切换目录，不影响调用方。
+        if [ $# -eq 2 ] && ! cd "$2" 2>/dev/null; then
+            echo "hu: 找不到源码目录 $2" >&2
             exit 2
         fi
-        echo "hu: 构建当前目录的源码（跳过测试）..."
-        sh ./mvnw -q package -DskipTests
+        if [ ! -f src/dist/bin/hu ] || [ ! -f install.sh ]; then
+            echo "hu: $(pwd) 不是 hu-agent 源码目录：在源码目录中运行 hu update --local，或用 hu update --local <源码目录> 指定" >&2
+            exit 2
+        fi
+        # 进度写到标准输出，与安装脚本的 say 同样以 hu-agent> 开头：hu: 开头的只有失败原因。
+        echo "hu-agent> 构建 $(pwd) 的源码（跳过测试）..."
+        # 收集构建输出再显示（-q 成功时几乎没有输出），以便认出 JDK 不对：没过 pom 的 require-jdk-25 检查，
+        # 或 JAVA_HOME 指向 JRE、没有编译器。hu 自带的 Java 是 JRE，构建只能用 JAVA_HOME 指定的 JDK。
+        build_code=0
+        build_output=$(sh ./mvnw -q package -DskipTests 2>&1) || build_code=$?
+        [ -z "$build_output" ] || printf '%s\n' "$build_output"
+        if [ "$build_code" -ne 0 ]; then
+            if printf '%s\n' "$build_output" | grep -q -e require-jdk-25 -e 'No compiler is provided'; then
+                echo "hu: 构建需要 JDK 25：hu 自带的 Java 是 JRE，不能编译源码。请先把 JAVA_HOME 指向 JDK 25 再运行，例如 export JAVA_HOME=/path/to/jdk-25" >&2
+            fi
+            exit "$build_code"
+        fi
         HU_PACKAGE="$(pwd)/target/hu-agent.tar.gz" sh ./install.sh
         exit
     fi
@@ -76,19 +100,23 @@ if [ "${1:-}" = update ]; then
         run_update "$@"
         update_code=$?
     else
-        # 丢弃标准输出、留下标准错误：失败原因取最后一条 hu 或安装脚本报出的错误。
-        update_errors=$(run_update "$@" 2>&1 >/dev/null)
+        # 标准输出与标准错误按先后收集，成功时丢弃；失败原因取最后一条 hu 或安装脚本报出的错误。
+        update_log=$(run_update "$@" 2>&1)
         update_code=$?
-        update_reason=$(printf '%s\n' "$update_errors" | sed -n -e 's/^hu: //p' -e 's/^hu-agent> 错误：//p' | tail -n 1)
+        update_reason=$(printf '%s\n' "$update_log" | sed -n -e 's/^hu: //p' -e 's/^hu-agent> 错误：//p' | tail -n 1)
     fi
     if [ "$update_code" -eq 0 ]; then
         echo '更新完成'
-    elif [ -n "$update_reason" ]; then
+        exit 0
+    fi
+    # 失败时显示收集的输出；hu: 开头的是 hu 自己的失败原因，下面单独一行，不重复。
+    if [ "$update_debug" != 1 ]; then
+        printf '%s\n' "$update_log" | sed '/^hu: /d' | sed '/./,$!d' >&2
+    fi
+    if [ -n "$update_reason" ]; then
         echo "更新失败：$update_reason" >&2
-    elif [ "$update_debug" = 1 ]; then
-        echo '更新失败' >&2
     else
-        echo '更新失败，加 --debug 查看详细日志' >&2
+        echo '更新失败' >&2
     fi
     exit "$update_code"
 fi

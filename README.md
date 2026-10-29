@@ -197,11 +197,12 @@ mvn package                 # 生成 target/hu-agent.jar（含依赖）以及发
 java -jar target/hu-agent.jar        # 直接运行，配置读 ~/.hu-agent/model.properties 与 config.properties
 mvn -q compile exec:java             # 从源码运行
 hu update --local                    # 在源码目录执行：构建（跳过测试）并把当前源码安装为 hu 命令
+hu update --local ~/coding/hu-agent  # 在任意目录执行：构建并安装指定目录的源码（相对路径按当前目录解析）
 ```
 
-`hu update`（包括 `--local`、`--pkg`）默认只显示“更新中”和“更新完成”。失败时返回非零退出码，并用一行说明原因，例如 hu 仍在运行时的 `更新失败：Cannot replace …\app. Exit every running hu and try again.`；没有明确原因（如构建失败）时显示“更新失败，加 --debug 查看详细日志”。需要详细构建、下载和安装日志时，使用 `hu update --debug`（或 `-d`）；调试选项放在更新来源参数前，例如 `hu update --debug --local`。
+`hu update`（包括 `--local`、`--pkg`）成功时只显示“更新中”和“更新完成”。失败时返回非零退出码，先显示这次构建、下载和安装的全部输出，最后一行说明原因，例如 hu 仍在运行时的 `更新失败：Cannot replace …\app. Exit every running hu and try again.`；没有明确原因（如构建失败）时最后一行是“更新失败”，原因看上面的构建输出。想边执行边看输出（成功时也显示）时，使用 `hu update --debug`（或 `-d`）；调试选项放在更新来源参数前，例如 `hu update --debug --local`。
 
-`hu update --local` 用仓库里的安装脚本安装 `target` 下的发布包，结果与正式安装相同，只是来源换成本地构建；之后 `hu update` 会回到最新发布版。
+`hu update --local` 用仓库里的安装脚本安装 `target` 下的发布包，结果与正式安装相同，只是来源换成本地构建；之后 `hu update` 会回到最新发布版。构建要用 `JAVA_HOME` 指定的 JDK 25：hu 自带的 Java 是 JRE，只能运行 hu、不能编译。`JAVA_HOME` 是旧版 JDK 或指向 JRE 时，失败的最后一行会提示先指定 JDK 25，例如 `$env:JAVA_HOME = 'C:\path\to\jdk-25'`（macOS / Linux 为 `export JAVA_HOME=/path/to/jdk-25`）。
 
 入口是 `dev.huagent.HuMain`。和教程 S18 相比，改动在这些地方：
 

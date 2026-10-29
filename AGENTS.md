@@ -7,7 +7,7 @@
 - 需要 JDK 25。系统 PATH 上可能是旧版本，运行 Maven 前先让 `JAVA_HOME` 指向 JDK 25。
 - 全部测试：`./mvnw -o -q test`（Windows PowerShell 里是 `./mvnw.cmd -o -q test`；不需要 API Key，模型接口用本地模拟）。单个测试类加 `-Dtest=GrepToolTest`。
 - 改完至少运行相关的测试类；改了公共行为（工具、ChatLoop、提示词、配置默认值）时运行全部测试。
-- 正在运行的 hu 不会因为改了源码而变化。改完并通过测试后，提醒用户退出 hu，再在本目录运行 `hu update --local` 构建并安装。不要在 hu 的 shell 工具里自己运行它：它会替换正在使用的安装。
+- 正在运行的 hu 不会因为改了源码而变化。改完并通过测试后，提醒用户退出 hu，再在本目录运行 `hu update --local`（或在任意目录运行 `hu update --local <本目录>`）构建并安装。不要在 hu 的 shell 工具里自己运行它：它会替换正在使用的安装。
 
 ## 代码在哪里
 

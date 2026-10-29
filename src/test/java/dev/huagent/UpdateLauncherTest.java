@@ -48,7 +48,17 @@ class UpdateLauncherTest {
     }
 
     private void build(int code) throws Exception {
-        Files.writeString(root.resolve("mvnw.cmd"), "@echo off\r\necho BUILD-LOG\r\necho BUILD-ERROR 1>&2\r\necho %*> build-args.txt\r\nexit /b " + code + "\r\n");
+        build(code, new String[0]);
+    }
+
+    /** 假构建器：输出 BUILD-LOG、BUILD-ERROR 与 lines（标准输出），记下参数后以 code 退出。 */
+    private void build(int code, String... lines) throws Exception {
+        StringBuilder script = new StringBuilder("@echo off\r\necho BUILD-LOG\r\necho BUILD-ERROR 1>&2\r\n");
+        for (String line : lines) {
+            script.append("echo ").append(line).append("\r\n");
+        }
+        script.append("echo %*> build-args.txt\r\nexit /b ").append(code).append("\r\n");
+        Files.writeString(root.resolve("mvnw.cmd"), script.toString());
     }
 
     private void installer(String ending) throws Exception {
@@ -65,12 +75,17 @@ class UpdateLauncherTest {
     }
 
     private Result run(String args) throws Exception {
+        return run(args, root);
+    }
+
+    /** 在 directory 中运行 hu update；输出文件与运行脚本都放在 root 下。 */
+    private Result run(String args, Path directory) throws Exception {
         Path output = root.resolve("output.txt");
         // 只执行 target 内复制的启动器；不调用真实安装器，也不访问网络。
         Path runner = root.resolve("run.cmd");
         Files.writeString(runner, "@echo off\r\nchcp 65001 >nul\r\ncall \"" + launcher + "\" update " + args + "\r\nexit /b %errorlevel%\r\n");
         ProcessBuilder builder = new ProcessBuilder("cmd.exe", "/d", "/c", "call", runner.toString())
-                .directory(root.toFile()).redirectErrorStream(true).redirectOutput(output.toFile());
+                .directory(directory.toFile()).redirectErrorStream(true).redirectOutput(output.toFile());
         builder.environment().remove("HU_PACKAGE");
         Process process = builder.start();
         boolean finished = process.waitFor(20, TimeUnit.SECONDS);
@@ -96,16 +111,56 @@ class UpdateLauncherTest {
     }
 
     @Test
-    void installerFailurePreservesExitCodeAndHidesLogs() throws Exception {
-        installer("exit 7");
-        assertEquals(new Result(7, "更新中\n更新失败，加 --debug 查看详细日志\n"), run("--pkg fake.zip"));
-        assertEquals(new Result(7, "更新中\n更新失败，加 --debug 查看详细日志\n"), run("--local"));
+    void localBuildsAndInstallsTheGivenSourceDirectoryFromAnywhere() throws Exception {
+        Path elsewhere = Files.createDirectories(root.resolve("other project ! dir"));
+        // 绝对路径与按当前目录解析的相对路径；构建与安装都在源码目录中进行。
+        for (String args : new String[]{"--local \"" + root + "\"", "--local ..", "-d --local \"" + root + "\\\""}) {
+            Files.deleteIfExists(root.resolve("installed.txt"));
+            Files.deleteIfExists(root.resolve("build-args.txt"));
+            Result result = run(args, elsewhere);
+            assertEquals(0, result.code(), args + "：" + result.output());
+            assertEquals("-q package -DskipTests", Files.readString(root.resolve("build-args.txt")).trim(), args);
+            assertEquals(root.resolve("target\\hu-agent.zip") + "\n" + root,
+                    Files.readString(root.resolve("installed.txt")), args);
+        }
+        assertFalse(Files.exists(elsewhere.resolve("build-args.txt")));
     }
 
     @Test
-    void buildFailureSkipsInstallation() throws Exception {
+    void localWithADirectoryThatIsNotTheSourceTreeIsReported() throws Exception {
+        Path elsewhere = Files.createDirectories(root.resolve("other project"));
+        assertEquals(new Result(2, "更新中\n更新失败：Not a hu-agent source directory: " + elsewhere
+                        + ". Run hu update --local in the source directory, or pass it: hu update --local <dir>.\n"),
+                run("--local \"" + elsewhere + "\""));
+        assertFalse(Files.exists(root.resolve("build-args.txt")));
+        assertFalse(Files.exists(root.resolve("installed.txt")));
+    }
+
+    @Test
+    void installerFailurePreservesExitCodeAndShowsLogs() throws Exception {
+        installer("exit 7");
+        for (String args : new String[]{"--pkg fake.zip", "--local"}) {
+            Result result = run(args);
+            assertEquals(7, result.code(), args + "：" + result.output());
+            assertTrue(result.output().startsWith("更新中\n"), result.output());
+            // 成功时不显示的构建与安装输出，失败时全部显示，最后一行说明失败。
+            for (String log : new String[]{"INSTALL-HOST", "INSTALL-OUTPUT", "INSTALL-WARNING", "INSTALL-STDERR"}) {
+                assertTrue(result.output().contains(log), args + "：" + result.output());
+            }
+            assertEquals(args.equals("--local"), result.output().contains("BUILD-LOG"), result.output());
+            assertTrue(result.output().endsWith("\n更新失败\n"), result.output());
+        }
+    }
+
+    @Test
+    void buildFailureShowsTheBuildLogAndSkipsInstallation() throws Exception {
         build(9);
-        assertEquals(new Result(9, "更新中\n更新失败，加 --debug 查看详细日志\n"), run("--local"));
+        Result result = run("--local");
+        assertEquals(9, result.code(), result.output());
+        assertTrue(result.output().contains("BUILD-LOG"), result.output());
+        assertTrue(result.output().contains("BUILD-ERROR"), result.output());
+        assertFalse(result.output().contains("INSTALL-"), result.output());
+        assertTrue(result.output().endsWith("\n更新失败\n"), result.output());
         assertFalse(Files.exists(root.resolve("installed.txt")));
     }
 
@@ -124,9 +179,32 @@ class UpdateLauncherTest {
     }
 
     @Test
-    void quietFailureShowsOnlyTheReason() throws Exception {
+    void wrongJdkTellsToPointJavaHomeToAJdk25() throws Exception {
+        String hint = "更新失败：构建需要 JDK 25：hu 自带的 Java 是 JRE，不能编译源码。请先把 JAVA_HOME 指向 JDK 25 再运行，"
+                + "例如 $env:JAVA_HOME = 'C:\\path\\to\\jdk-25'\n";
+        // pom 的 require-jdk-25 检查没过（JAVA_HOME 是旧 JDK），或 JAVA_HOME 指向 JRE、没有编译器。
+        for (String line : new String[]{"[ERROR] Failed to execute goal org.apache.maven.plugins:maven-enforcer-plugin"
+                + ":3.5.0:enforce (require-jdk-25) on project hu-agent:",
+                "[ERROR] No compiler is provided in this environment. Perhaps you are running on a JRE rather than a JDK?"}) {
+            build(1, line);
+            for (String args : new String[]{"--local", "-d --local"}) {
+                Result result = run(args);
+                assertEquals(1, result.code(), args + "：" + result.output());
+                assertTrue(result.output().contains(line), args + "：" + result.output());
+                assertTrue(result.output().endsWith("\n" + hint), args + "：" + result.output());
+            }
+        }
+        assertFalse(Files.exists(root.resolve("installed.txt")));
+    }
+
+    @Test
+    void quietFailureShowsTheLogAndThenTheReason() throws Exception {
         installer("throw 'INSTALL-EXCEPTION'");
-        assertEquals(new Result(1, "更新中\n更新失败：INSTALL-EXCEPTION\n"), run("--pkg fake.zip"));
+        Result quiet = run("--pkg fake.zip");
+        assertEquals(1, quiet.code(), quiet.output());
+        assertTrue(quiet.output().startsWith("更新中\n"), quiet.output());
+        assertTrue(quiet.output().contains("INSTALL-HOST"), quiet.output());
+        assertTrue(quiet.output().endsWith("\n更新失败：INSTALL-EXCEPTION\n"), quiet.output());
         Result result = run("--debug --pkg fake.zip");
         assertEquals(1, result.code());
         assertTrue(result.output().contains("INSTALL-EXCEPTION"), result.output());
@@ -136,7 +214,8 @@ class UpdateLauncherTest {
     @Test
     void missingSourceTreeOrInstallerIsReported() throws Exception {
         Files.delete(root.resolve("src/dist/bin/hu.cmd"));
-        assertEquals(new Result(2, "更新中\n更新失败：Run hu update --local in the hu-agent source directory.\n"),
+        assertEquals(new Result(2, "更新中\n更新失败：Not a hu-agent source directory: " + root
+                        + ". Run hu update --local in the source directory, or pass it: hu update --local <dir>.\n"),
                 run("--local"));
         assertFalse(Files.exists(root.resolve("build-args.txt")));
         Files.delete(app.resolve("install.ps1"));
@@ -161,7 +240,8 @@ class UpdateLauncherTest {
 
     @Test
     void invalidArgumentsNeverInstall() throws Exception {
-        for (String args : new String[]{"--pkg", "--local extra", "--pkg a b", "--unknown", "--debug --pkg", "--local --debug"}) {
+        for (String args : new String[]{"--pkg", "--local a b", "--pkg a b", "--unknown", "--debug --pkg",
+                "--local --debug", "--local -x"}) {
             Result result = run(args);
             assertEquals(2, result.code(), args + ": " + result.output());
             assertTrue(result.output().contains("usage:"), result.output());

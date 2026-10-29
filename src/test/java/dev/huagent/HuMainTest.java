@@ -63,6 +63,6 @@ class HuMainTest {
         StringWriter buffer = new StringWriter();
         assertEquals(2, HuMain.options(new String[]{"update", "--local"}, new PrintWriter(buffer, true)));
         assertTrue(buffer.toString().contains("update 由 hu 启动脚本执行"), buffer.toString());
-        assertTrue(HuMain.usage().contains("hu update [--debug | -d] [--local | --pkg <安装包>]"));
+        assertTrue(HuMain.usage().contains("hu update [--debug | -d] [--local [<源码目录>] | --pkg <安装包>]"));
     }
 }
