@@ -142,6 +142,10 @@ public final class HuMain {
             }
             IntSupplier columns = editor == null ? TerminalWidth.system() : editor::columns;
             PromptStyle prompt = promptStyle(console, config, columns, autoApprove);
+            if (editor != null && prompt instanceof FramedPrompt frame) {
+                // 与 Claude Code 一样输入框固定在终端最下方，任务期间也显示，输出插到它上方（见 LineEditor.pin）。
+                prompt = editor.pin(frame);
+            }
             Transcript transcript = transcript(console, debug);
             if (editor != null) {
                 // 与 Claude Code 一样对话区不贴着终端最左列，长行折行后与正文对齐（见 Margin）；调试模式保持原样。

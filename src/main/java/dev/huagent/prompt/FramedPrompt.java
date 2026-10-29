@@ -116,6 +116,11 @@ public final class FramedPrompt implements PromptStyle {
         output.println();
     }
 
+    /** 输入行的提示符（"❯ " 或 "> "）；LineEditor 固定输入框时据此认出主输入。 */
+    String marker() {
+        return marker;
+    }
+
     String rule() {
         int cols = columns.getAsInt();
         int width = cols > 0 ? cols - 1 : MIN_RULE;

@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -41,6 +42,8 @@ class LineEditorTest {
     private static final String UNTRACK_MOUSE = "\u001b[?1000l";
 
     private static final String ESC = "\u001b";
+    /** frame() 的状态栏开头。用 ASCII 分隔线：xterm 测试终端里 JLine 会把 ─ 换成线框字符集。 */
+    private static final String RULE = "-- m --";
 
     private PipedOutputStream keyboard;
     private ByteArrayOutputStream screen;
@@ -293,6 +296,127 @@ class LineEditorTest {
     }
 
     @Test
+    void pinnedStyleWritesOnlyTheMarkerAndABlankLineAfterInput() {
+        PromptStyle style = editor.pin(frame());
+        StringWriter text = new StringWriter();
+        PrintWriter out = new PrintWriter(text);
+        style.begin(out);
+        style.end(out, "你好");
+        // 空行马上回到输入框，输入结束时什么都不写。
+        style.end(out, " ");
+        style.end(out, null);
+        out.flush();
+        assertEquals("❯ " + System.lineSeparator(), text.toString());
+    }
+
+    @Test
+    void pinnedBoxStaysBelowOutputAndSubmittedInputStaysInTheConversation() throws Exception {
+        PromptStyle style = editor.pin(frame());
+        PrintWriter output = editor.output();
+        CompletableFuture<String> line = readPinned(style);
+        type("hel");
+        awaitScreen("hel");
+
+        int from = screen().length();
+        output.println("后台> bg_1 completed");
+        output.flush();
+        String shown = awaitScreen("后台> bg_1 completed", from);
+        int notice = shown.indexOf("后台> bg_1 completed", from);
+        assertTrue(shown.indexOf(RULE, notice) > notice, "状态栏与输入行在输出下方重画：" + shown);
+
+        from = screen().length();
+        type("lo\r");
+        assertEquals("hello", line.get(5, TimeUnit.SECONDS));
+        // 测试终端把每个 \n 写成 \r\n，System.lineSeparator() 在 Windows 上成了 \r\r\n，只看紧跟的回车；
+        // 输入框里的输入行后面跟的是光标移动，不会出现。
+        awaitScreen("❯ hello\r", from);
+    }
+
+    @Test
+    void duringATaskTheBoxStaysAndEnterQueuesTheInputForTheNextPrompt() throws Exception {
+        PromptStyle style = editor.pin(frame());
+        PrintWriter output = editor.output();
+        editor.taskRunning(true);
+        awaitScreen(LineEditor.RUNNING);
+        type("下一步\r");
+        awaitScreen(LineEditor.QUEUED + "下一步");
+        type("再");
+        awaitScreen("再");
+
+        int from = screen().length();
+        output.println("● 回复");
+        output.flush();
+        String shown = awaitScreen("● 回复", from);
+        int reply = shown.indexOf("● 回复", from);
+        assertTrue(shown.indexOf(LineEditor.RUNNING, reply) > reply, "任务期间的输入框在输出下方重画：" + shown);
+
+        endTask();
+        // 回到输入框时不读终端，直接取出排队的输入，留在对话里。
+        from = screen().length();
+        assertEquals("下一步", startPinned(style).get(5, TimeUnit.SECONDS));
+        awaitScreen("❯ 下一步\r", from);
+        // 没提交的文字填进下一次的输入行。
+        CompletableFuture<String> line = readPinned(style);
+        type("来\r");
+        assertEquals("再来", line.get(5, TimeUnit.SECONDS));
+        assertTrue(terminal.getAttributes().getLocalFlag(Attributes.LocalFlag.ECHO), "任务结束后恢复终端模式");
+    }
+
+    @Test
+    void escapeInTheTaskBoxInterruptsAndPutsQueuedInputBack() throws Exception {
+        CountDownLatch interrupts = new CountDownLatch(1);
+        editor.onInterrupt(interrupts::countDown);
+        PromptStyle style = editor.pin(frame());
+        editor.taskRunning(true);
+        awaitScreen(LineEditor.RUNNING);
+        type("改一下\r");
+        awaitScreen(LineEditor.QUEUED + "改一下");
+        type(ESC);
+        assertTrue(interrupts.await(5, TimeUnit.SECONDS));
+        endTask();
+
+        // 中断后排队的输入不自动发送，放回输入行。
+        CompletableFuture<String> line = readPinned(style);
+        assertFalse(line.isDone());
+        type("\r");
+        assertEquals("改一下", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void confirmationDuringATaskTakesTheTerminalAndTheBoxComesBack() throws Exception {
+        PromptStyle style = editor.pin(frame());
+        editor.taskRunning(true);
+        awaitScreen(LineEditor.RUNNING);
+        type("ab");
+        awaitScreen("ab");
+
+        CompletableFuture<String> answer = read("[y/N] ");
+        int from = screen().length();
+        type("y\r");
+        assertEquals("y", answer.get(5, TimeUnit.SECONDS));
+        awaitScreen(LineEditor.RUNNING, from);
+        awaitScreen("ab", from);
+
+        endTask();
+        CompletableFuture<String> line = readPinned(style);
+        type("c\r");
+        assertEquals("abc", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void ctrlCTwiceInTheTaskBoxEndsInputAtTheNextPrompt() throws Exception {
+        CountDownLatch interrupts = new CountDownLatch(2);
+        editor.onInterrupt(interrupts::countDown);
+        PromptStyle style = editor.pin(frame());
+        editor.taskRunning(true);
+        awaitScreen(LineEditor.RUNNING);
+        type("\u0003\u0003");
+        assertTrue(interrupts.await(5, TimeUnit.SECONDS));
+        endTask();
+        assertNull(startPinned(style).get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
     void ctrlDOnAnEmptyLineEndsInput() throws Exception {
         CompletableFuture<String> line = read("A> ");
         type("\u0004");
@@ -428,6 +552,45 @@ class LineEditorTest {
             awaitScreen(prompt);
         }
         return line;
+    }
+
+    /** 固定输入框的状态栏：分隔线按 20 列画，状态里只有模型名 m。 */
+    private static FramedPrompt frame() {
+        return new FramedPrompt("❯ ", '-', () -> 20, "m", 0);
+    }
+
+    /** 固定输入框时等待输入：样式写出 "❯ " 后开始读取，等输入框画出来才返回（此时终端已进入 raw 模式）。 */
+    private CompletableFuture<String> readPinned(PromptStyle style) throws InterruptedException {
+        int from = screen().length();
+        CompletableFuture<String> line = startPinned(style);
+        awaitScreen(RULE, from);
+        return line;
+    }
+
+    /** 样式写出 "❯ " 后开始读取，不等输入框画出（取出排队的输入或结束输入时不画）。 */
+    private CompletableFuture<String> startPinned(PromptStyle style) {
+        style.begin(editor.output());
+        editor.output().flush();
+        BufferedReader input = editor.input();
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return input.readLine();
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        });
+    }
+
+    /** 任务结束，等监听线程结束任务期间的输入框、恢复终端模式；之后的按键才交给下一次读取。 */
+    private void endTask() throws InterruptedException {
+        editor.taskRunning(false);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!terminal.getAttributes().getLocalFlag(Attributes.LocalFlag.ECHO)) {
+            if (System.nanoTime() > deadline) {
+                fail("任务期间的输入框没有结束：" + screen());
+            }
+            Thread.sleep(10);
+        }
     }
 
     private void advance(long millis) {
