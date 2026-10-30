@@ -1,11 +1,11 @@
 package dev.huagent.harness;
 
 /**
- * S15：模型请求的限流退避策略。首次重试等待 baseDelay，之后指数翻倍，上限 30 秒；
- * 服务商给出 Retry-After 时优先采用（上限 60 秒）。maxRetries 是额外重试次数，0 表示不重试。
+ * S15：模型请求失败的退避重试策略（哪些失败可以重试见 ModelError）。首次重试等待 baseDelay，之后指数翻倍，上限 30 秒；
+ * 服务商给出 Retry-After 时优先采用（上限 60 秒）。maxRetries 是额外重试次数，0 表示不重试；用完仍失败时停止本轮。
  */
 public final class ModelRetryPolicy {
-    public static final int DEFAULT_MAX_RETRIES = 3;
+    public static final int DEFAULT_MAX_RETRIES = 5;
     public static final long DEFAULT_BASE_DELAY_MILLIS = 2000;
     private static final long MAX_BACKOFF_MILLIS = 30_000;
     private static final long MAX_RETRY_AFTER_MILLIS = 60_000;

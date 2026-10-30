@@ -31,7 +31,7 @@ import java.util.List;
  * S15 入口（上一课）：在 S14 全部能力之上做集成 Harness，不新增独立机制。
  * 本课把 S01—S14 的机制整合到同一条请求管线：
  * 事件唤醒——定时计划的非取消终态进入对话、后台完成与定时结束在空闲时唤醒循环（哨兵轮，不能交互确认）；
- * 错误恢复——HTTP 429/503/529 按 Retry-After 或指数退避重试，上下文超长先响应式压缩再重试。
+ * 错误恢复——可重试的失败（错误码、连接失败与超时，见 ModelError）按 Retry-After 或指数退避重试，上下文超长先响应式压缩再重试。
  * 不接入工作流（WorkflowStarter 为 null），行为与 S15 默认入口完全相同。
  */
 public final class HarnessMain {

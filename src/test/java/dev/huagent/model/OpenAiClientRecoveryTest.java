@@ -6,14 +6,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** S15：把 HTTP 429/503/529 识别为可重试的限流，把上下文超长错误单独分类，其余保持通用失败。 */
+/** S15：按 ModelError 把可重试的错误码与连接失败分类为 ModelUnavailableException，上下文超长单独分类，其余保持通用失败。 */
 class OpenAiClientRecoveryTest {
     private HttpServer server;
     private int status = 200;
@@ -68,13 +70,28 @@ class OpenAiClientRecoveryTest {
     }
 
     @Test
-    void maps503And529ToModelUnavailableToo() {
-        status = 503;
-        assertThrows(ModelUnavailableException.class,
-                () -> client().complete(List.of(new ChatMessage("user", "你好")), List.of()));
-        status = 529;
-        assertThrows(ModelUnavailableException.class,
-                () -> client().complete(List.of(new ChatMessage("user", "你好")), List.of()));
+    void mapsServerErrorsAndTimeoutsToModelUnavailableToo() {
+        for (int code : new int[]{408, 409, 500, 502, 503, 504, 520, 529}) {
+            status = code;
+            ModelUnavailableException e = assertThrows(ModelUnavailableException.class,
+                    () -> client().complete(List.of(new ChatMessage("user", "你好")), List.of()), "HTTP " + code);
+            assertEquals("模型接口返回 HTTP " + code + "（" + ModelError.of(code).label() + "）", e.getMessage());
+        }
+    }
+
+    @Test
+    void mapsConnectionFailureToModelUnavailable() throws IOException {
+        int port;
+        try (ServerSocket closed = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            port = closed.getLocalPort();
+        }
+        OpenAiClient unreachable = new OpenAiClient("http://127.0.0.1:" + port + "/v1",
+                "test-key", "test-model", Duration.ofSeconds(5));
+        ModelUnavailableException e = assertThrows(ModelUnavailableException.class,
+                () -> unreachable.complete(List.of(new ChatMessage("user", "你好")), List.of()));
+        assertTrue(e.getMessage().startsWith("连接模型接口失败（"), e.getMessage());
+        assertNull(e.retryAfterSeconds());
+        assertTrue(ModelError.retryable(e));
     }
 
     @Test
@@ -98,9 +115,15 @@ class OpenAiClientRecoveryTest {
                 () -> client().complete(List.of(new ChatMessage("user", "你好")), List.of()));
         assertFalse(e instanceof ContextTooLargeException);
         assertFalse(e instanceof ModelUnavailableException);
-        status = 500;
-        assertThrows(IOException.class,
-                () -> client().complete(List.of(new ChatMessage("user", "你好")), List.of()));
+        assertEquals("模型接口返回 HTTP 400（请求无效）", e.getMessage());
+        for (int code : new int[]{401, 403, 404, 418}) {
+            status = code;
+            IOException other = assertThrows(IOException.class,
+                    () -> client().complete(List.of(new ChatMessage("user", "你好")), List.of()));
+            assertFalse(ModelError.retryable(other), "HTTP " + code);
+        }
+        assertEquals("模型接口返回 HTTP 418", assertThrows(IOException.class,
+                () -> client().complete(List.of(new ChatMessage("user", "你好")), List.of())).getMessage());
     }
 
     @Test

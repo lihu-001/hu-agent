@@ -57,8 +57,7 @@ public final class OpenAiClient implements ModelClient, ModelSelection {
                 .header("Authorization", "Bearer " + apiKey)
                 .GET()
                 .build();
-        return ModelHttp.modelIds(ModelHttp.modelList(httpClient.send(request,
-                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))));
+        return ModelHttp.modelIds(ModelHttp.modelList(ModelHttp.send(httpClient, request).body()));
     }
 
     @Override
@@ -94,11 +93,7 @@ public final class OpenAiClient implements ModelClient, ModelSelection {
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(JSON.toJSONString(body), StandardCharsets.UTF_8))
                 .build();
-        HttpResponse<String> response = httpClient.send(request,
-                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw ModelHttp.failure(response);
-        }
+        HttpResponse<String> response = ModelHttp.send(httpClient, request);
         ChatMessage answer = parseAnswer(response.body());
         int tokens = contextTokens(response.body());
         if (tokens >= 0) {

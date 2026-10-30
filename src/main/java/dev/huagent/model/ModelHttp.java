@@ -10,13 +10,14 @@ import com.alibaba.fastjson2.JSONObject;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
-/** OpenAI 与 Anthropic 两种协议的客户端共用：基础地址与 api-key 校验、HTTP 失败分类、模型列表解析。 */
+/** OpenAI 与 Anthropic 两种协议的客户端共用：基础地址与 api-key 校验、发送请求（失败分类见 ModelError）、模型列表解析。 */
 final class ModelHttp {
     /** 建立连接最多等这么久：请求超时可以很长（模型生成慢），连不上的地址仍应很快报错。 */
     static final Duration MAX_CONNECT_TIMEOUT = Duration.ofSeconds(30);
@@ -30,13 +31,24 @@ final class ModelHttp {
         return HttpClient.newBuilder().connectTimeout(connect).build();
     }
 
-    /** 模型列表响应：两种协议都是 {"data": [{"id": …}, …]}，Anthropic 另有分页字段。 */
-    static JSONObject modelList(HttpResponse<String> response) throws IOException {
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw failure(response);
-        }
+    /** 发送请求，只返回成功（2xx）的响应；网络失败与错误状态码按 ModelError 分类后抛出。 */
+    static HttpResponse<String> send(HttpClient client, HttpRequest request) throws IOException, InterruptedException {
+        HttpResponse<String> response;
         try {
-            JSONObject json = JSON.parseObject(response.body());
+            response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw ModelError.connectionFailure(e);
+        }
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw ModelError.failure(response);
+        }
+        return response;
+    }
+
+    /** 模型列表响应正文：两种协议都是 {"data": [{"id": …}, …]}，Anthropic 另有分页字段。 */
+    static JSONObject modelList(String body) throws IOException {
+        try {
+            JSONObject json = JSON.parseObject(body);
             if (json == null || !(json.get("data") instanceof JSONArray)) {
                 throw new IOException("模型列表响应缺少 data");
             }
@@ -88,42 +100,4 @@ final class ModelHttp {
         return key;
     }
 
-    /** S15：把可恢复的失败分成限流与上下文超长两类，其余保持通用失败。正文可能含敏感信息，不进入异常消息。 */
-    static IOException failure(HttpResponse<String> response) {
-        int status = response.statusCode();
-        if (status == 429 || status == 503 || status == 529) {
-            return new ModelUnavailableException("模型接口返回 HTTP " + status
-                    + (status == 429 ? "（限流）" : "（服务暂不可用）"), retryAfterSeconds(response));
-        }
-        if ((status == 400 || status == 413) && looksLikeContextOverflow(response.body())) {
-            return new ContextTooLargeException("模型接口返回 HTTP " + status + "（上下文超长）");
-        }
-        return new IOException("模型接口返回 HTTP " + status);
-    }
-
-    /** 只接受数字秒形式；HTTP-date 与缺失都交给本地退避策略。 */
-    private static Long retryAfterSeconds(HttpResponse<String> response) {
-        String value = response.headers().firstValue("Retry-After").orElse(null);
-        if (value == null) {
-            return null;
-        }
-        try {
-            return Long.parseLong(value.strip());
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
-    /** 服务商对超上下文的措辞不一致，按常见错误码与文案匹配。 */
-    private static boolean looksLikeContextOverflow(String body) {
-        if (body == null) {
-            return false;
-        }
-        String text = body.toLowerCase(Locale.ROOT);
-        return text.contains("context_length_exceeded") || text.contains("maximum context length")
-                || text.contains("context length exceeded") || text.contains("prompt is too long")
-                || text.contains("input is too long") || text.contains("input tokens exceed")
-                || text.contains("context window") || text.contains("too many tokens")
-                || text.contains("request_too_large");
-    }
 }

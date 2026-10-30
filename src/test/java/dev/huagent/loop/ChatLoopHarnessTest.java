@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringReader;
 import java.io.StringWriter;
+import java.net.http.HttpTimeoutException;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -173,7 +174,69 @@ class ChatLoopHarnessTest {
         StringWriter out = run(loop(model, null, null, retry, null, null), "开始\nexit\n");
 
         assertEquals(2, model.requests.size());
-        assertTrue(out.toString().contains("请求失败：模型接口返回 HTTP 429（限流）"));
+        assertTrue(out.toString().contains("请求失败：模型接口返回 HTTP 429（限流）；已重试 1 次仍未成功，任务已停止。"
+                + "本轮未保存，请重新输入。"), out.toString());
+    }
+
+    @Test
+    void connectionFailureAndTimeoutRetryThenSucceed() throws IOException {
+        List<Long> slept = new ArrayList<>();
+        ModelRetryPolicy retry = new ModelRetryPolicy(5, 1000, slept::add);
+        FakeModel model = new FakeModel();
+        model.script.add(new ModelUnavailableException("连接模型接口失败（ConnectException）", null));
+        model.script.add(new HttpTimeoutException("request timed out"));
+        model.script.add(ChatMessage.assistant("完成", List.of()));
+
+        StringWriter out = run(loop(model, null, null, retry, null, null), "开始\nexit\n");
+
+        assertEquals(3, model.requests.size());
+        assertEquals(List.of(1000L, 2000L), slept);
+        assertTrue(out.toString().contains("模型请求> 连接模型接口失败（ConnectException），等待 1 秒后第 1 次重试（最多 5 次）..."),
+                out.toString());
+        assertTrue(out.toString().contains("模型请求> 模型接口请求超时，等待 2 秒后第 2 次重试（最多 5 次）..."),
+                out.toString());
+        assertFalse(out.toString().contains("请求失败"));
+    }
+
+    @Test
+    void stopsTurnAfterDefaultRetriesKeepingRecordedTools() throws IOException {
+        ModelRetryPolicy retry = new ModelRetryPolicy(ModelRetryPolicy.DEFAULT_MAX_RETRIES, 0, millis -> { });
+        FakeModel model = new FakeModel();
+        AtomicInteger executions = new AtomicInteger();
+        model.script.add(ChatMessage.assistant(null, List.of(new ToolCall("c1", "echo", "{}"))));
+        for (int i = 0; i <= ModelRetryPolicy.DEFAULT_MAX_RETRIES; i++) {
+            model.script.add(new ModelUnavailableException("连接模型接口失败（ConnectException）", null));
+        }
+        model.script.add(ChatMessage.assistant("下一轮完成", List.of()));
+
+        StringWriter out = run(loop(model, null, null, retry, null, echoTool(executions)), "做任务\n下一轮\nexit\n");
+
+        assertEquals(5, ModelRetryPolicy.DEFAULT_MAX_RETRIES);
+        // 第一次请求 + 首次失败 + 5 次重试，然后停止本轮；下一轮照常请求。
+        assertEquals(8, model.requests.size());
+        assertEquals(1, executions.get());
+        assertTrue(out.toString().contains("第 5 次重试（最多 5 次）"), out.toString());
+        assertFalse(out.toString().contains("第 6 次重试"));
+        assertTrue(out.toString().contains("请求失败：连接模型接口失败（ConnectException）；已重试 5 次仍未成功，任务已停止。"
+                + "已保留工具调用和结果"), out.toString());
+        assertEquals(List.of("system", "user", "assistant", "tool", "user"),
+                model.requests.get(7).stream().map(ChatMessage::role).toList());
+    }
+
+    @Test
+    void nonRetryableFailureStopsWithoutRetry() throws IOException {
+        List<Long> slept = new ArrayList<>();
+        ModelRetryPolicy retry = new ModelRetryPolicy(5, 1000, slept::add);
+        FakeModel model = new FakeModel();
+        model.script.add(new IOException("模型接口返回 HTTP 401（api-key 无效或已过期）"));
+
+        StringWriter out = run(loop(model, null, null, retry, null, null), "开始\nexit\n");
+
+        assertEquals(1, model.requests.size());
+        assertEquals(List.of(), slept);
+        assertTrue(out.toString().contains("请求失败：模型接口返回 HTTP 401（api-key 无效或已过期）；本轮未保存"),
+                out.toString());
+        assertFalse(out.toString().contains("重试"));
     }
 
     @Test

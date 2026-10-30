@@ -82,8 +82,7 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
         for (int page = 0; page < MODELS_MAX_PAGES; page++) {
             URI uri = URI.create(modelsEndpoint + "?limit=" + MODELS_PAGE_SIZE
                     + (after == null ? "" : "&after_id=" + URLEncoder.encode(after, StandardCharsets.UTF_8)));
-            JSONObject list = ModelHttp.modelList(httpClient.send(request(uri).GET().build(),
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)));
+            JSONObject list = ModelHttp.modelList(ModelHttp.send(httpClient, request(uri).GET().build()).body());
             models.addAll(ModelHttp.modelIds(list));
             after = list.getString("last_id");
             if (!Boolean.TRUE.equals(list.getBoolean("has_more")) || StrUtil.isBlank(after)) {
@@ -121,14 +120,10 @@ public final class AnthropicClient implements ModelClient, ModelSelection {
             }).toList());
             body.put("tool_choice", JSONObject.of("type", "auto"));
         }
-        HttpResponse<String> response = httpClient.send(request(endpoint)
-                        .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(JSON.toJSONString(body), StandardCharsets.UTF_8))
-                        .build(),
-                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw ModelHttp.failure(response);
-        }
+        HttpResponse<String> response = ModelHttp.send(httpClient, request(endpoint)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(JSON.toJSONString(body), StandardCharsets.UTF_8))
+                .build());
         ChatMessage answer = parseAnswer(response.body());
         int tokens = contextTokens(response.body());
         if (tokens >= 0) {

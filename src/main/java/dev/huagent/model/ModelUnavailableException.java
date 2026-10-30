@@ -2,12 +2,16 @@ package dev.huagent.model;
 
 import java.io.IOException;
 
-/** 模型服务暂时不可用（HTTP 429/503/529），可按 Retry-After 或指数退避后重试。 */
+/** 模型接口暂时不可用：可重试的错误码或连接失败（分类见 ModelError），可按 Retry-After 或指数退避后重试。 */
 public class ModelUnavailableException extends IOException {
     private final Long retryAfterSeconds;
 
     public ModelUnavailableException(String message, Long retryAfterSeconds) {
-        super(message);
+        this(message, retryAfterSeconds, null);
+    }
+
+    public ModelUnavailableException(String message, Long retryAfterSeconds, Throwable cause) {
+        super(message, cause);
         this.retryAfterSeconds = retryAfterSeconds != null && retryAfterSeconds > 0 ? retryAfterSeconds : null;
     }
 

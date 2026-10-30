@@ -20,6 +20,7 @@ import dev.huagent.model.ChatMessage;
 import dev.huagent.model.ContextTooLargeException;
 import dev.huagent.model.EmptyReplyException;
 import dev.huagent.model.ModelClient;
+import dev.huagent.model.ModelError;
 import dev.huagent.model.ModelSelection;
 import dev.huagent.model.ModelUnavailableException;
 import dev.huagent.prompt.PromptStyle;
@@ -67,7 +68,7 @@ public final class ChatLoop {
     private final TodoReminder reminder;
     private final ContextCompactor compactor;
     private final BackgroundManager background;
-    /** S15：程序事件中心与限流退避策略；为 null 时与 S14 行为一致。 */
+    /** S15：程序事件中心与失败退避重试策略；为 null 时与 S14 行为一致。 */
     private final EventHub events;
     private final ModelRetryPolicy retryPolicy;
     /** S17：会话目标的 Goal Gate；为 null 时与 S16 行为一致。 */
@@ -125,8 +126,8 @@ public final class ChatLoop {
     }
 
     /**
-     * S15：events 提供定时事件与哨兵轮状态，retry 提供限流退避；两者同时为 null 时与 S14 完全相同。
-     * retry 为 null 而 events 非 null 时，限流不重试，只做事件唤醒与响应式压缩。
+     * S15：events 提供定时事件与哨兵轮状态，retry 提供失败退避重试；两者同时为 null 时与 S14 完全相同。
+     * retry 为 null 而 events 非 null 时，失败不重试，只做事件唤醒与响应式压缩。
      */
     public ChatLoop(ModelClient client, ToolRegistry registry, int maxModelCalls, String systemPrompt,
                     AgentHooks hooks, TodoReminder reminder, ContextCompactor compactor,
@@ -562,6 +563,10 @@ public final class ChatLoop {
             } catch (HttpTimeoutException e) {
                 requeue(toolsRecorded, unsavedScheduled, unsavedBackground);
                 output.println("请求超时；" + failureHint(toolsRecorded));
+            } catch (RetriesExhaustedException e) {
+                requeue(toolsRecorded, unsavedScheduled, unsavedBackground);
+                output.println("请求失败：" + e.getMessage() + "；已重试 " + e.retries + " 次仍未成功，任务已停止。"
+                        + failureHint(toolsRecorded));
             } catch (IOException e) {
                 requeue(toolsRecorded, unsavedScheduled, unsavedBackground);
                 output.println("请求失败：" + e.getMessage() + "；" + failureHint(toolsRecorded));
@@ -630,7 +635,8 @@ public final class ChatLoop {
     }
 
     /**
-     * S15：限流（HTTP 429/503/529）按 Retry-After 或指数退避重试，超过次数上限后按普通失败处理；
+     * S15：可重试的失败（错误码、连接失败与请求超时，见 ModelError）按 Retry-After 或指数退避重试，
+     * 用完重试次数仍失败时抛出 RetriesExhaustedException，停止本轮；
      * 上下文超长先响应式压缩一次再重试，压缩不出摘要时按普通失败处理。其余失败原样抛出。
      * summarized 为 true 表示对话历史已被替换为摘要，调用方需要采纳新的历史。
      */
@@ -644,16 +650,6 @@ public final class ChatLoop {
                 // 响应不带 usage 时用量记为未知，不沿用上一次请求的数字。
                 contextTokens = -1;
                 return new Recovery(complete(sent, definitions), request, sent, reactiveCompacted);
-            } catch (ModelUnavailableException e) {
-                attempt++;
-                if (retryPolicy == null || attempt > retryPolicy.maxRetries()) {
-                    throw e;
-                }
-                long delay = retryPolicy.delayMillis(attempt, e.retryAfterSeconds());
-                output.println("模型请求> " + e.getMessage() + "，等待 " + (delay / 1000)
-                        + " 秒后第 " + attempt + " 次重试...");
-                output.flush();
-                retryPolicy.sleep(delay);
             } catch (ContextTooLargeException e) {
                 if (compactor == null || reactiveCompacted) {
                     throw e;
@@ -668,7 +664,33 @@ public final class ChatLoop {
                 sent = prepared.sent();
                 request = prepared.history();
                 reactiveCompacted = true;
+            } catch (IOException e) {
+                if (retryPolicy == null || !ModelError.retryable(e)) {
+                    throw e;
+                }
+                attempt++;
+                if (attempt > retryPolicy.maxRetries()) {
+                    throw retryPolicy.maxRetries() == 0 ? e : new RetriesExhaustedException(e, retryPolicy.maxRetries());
+                }
+                // 用户在请求中途按了 Esc：不再重试。
+                checkInterrupt();
+                Long retryAfter = e instanceof ModelUnavailableException unavailable ? unavailable.retryAfterSeconds() : null;
+                long delay = retryPolicy.delayMillis(attempt, retryAfter);
+                output.println("模型请求> " + ModelError.describe(e) + "，等待 " + (delay / 1000)
+                        + " 秒后第 " + attempt + " 次重试（最多 " + retryPolicy.maxRetries() + " 次）...");
+                output.flush();
+                retryPolicy.sleep(delay);
             }
+        }
+    }
+
+    /** 可重试的失败用完了重试次数；消息是最后一次失败的原因。 */
+    private static final class RetriesExhaustedException extends IOException {
+        private final int retries;
+
+        RetriesExhaustedException(IOException last, int retries) {
+            super(ModelError.describe(last), last);
+            this.retries = retries;
         }
     }
 

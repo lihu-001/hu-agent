@@ -118,7 +118,7 @@ class ModelCommandTest {
             assertEquals("before", config.model(), "会话切换不改启动配置");
             // 教程入口没有 ModelDefaults：只在本次会话生效；测试服务器不提供 /models。
             assertTrue(text.contains("模型> 仅本次会话生效。"), text);
-            assertTrue(text.contains("模型> 接口没有返回模型列表（模型接口返回 HTTP 404）"), text);
+            assertTrue(text.contains("模型> 接口没有返回模型列表（模型接口返回 HTTP 404（接口地址或模型不存在））"), text);
         } finally {
             server.stop(0);
         }
