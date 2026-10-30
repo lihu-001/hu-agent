@@ -57,7 +57,10 @@ class LineEditorTest {
         keyboard = new PipedOutputStream();
         PipedInputStream in = new PipedInputStream(keyboard, 4096);
         screen = new ByteArrayOutputStream();
+        // 各平台都用 exec 提供的 ExternalTerminal：输出同步写进 screen。Linux 上默认的 ffm 会另开一个 pty，
+        // 输出经泵线程异步转写，关闭终端时 pty 里还没转写的字节（如 close 恢复标题的序列）直接丢掉。
         terminal = TerminalBuilder.builder().system(false).streams(in, screen).type("xterm")
+                .provider(TerminalBuilder.PROP_PROVIDER_EXEC)
                 .stdinEncoding(StandardCharsets.UTF_8).stdoutEncoding(StandardCharsets.UTF_8)
                 .size(new Size(80, 24)).build();
         List<SlashCommand> commands = new ArrayList<>();
