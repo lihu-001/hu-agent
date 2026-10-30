@@ -96,10 +96,11 @@ class TurnInterruptTest {
         interrupt.begin();
         keys.start();
         assertEquals("", answers.readLine());
-        keys.join();
         assertTrue(Thread.currentThread().isInterrupted(), "回答读完后补发中断");
         interrupt.end();
         assertFalse(Thread.currentThread().isInterrupted());
+        // 中断状态清除后再等按键线程：带着中断状态 join 一个还没退出的线程会直接抛出 InterruptedException。
+        keys.join();
     }
 
     @Test
