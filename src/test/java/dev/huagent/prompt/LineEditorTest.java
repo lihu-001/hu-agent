@@ -18,6 +18,8 @@ import java.io.PipedOutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +27,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -184,6 +187,42 @@ class LineEditorTest {
     void closeWithoutTitleLeavesTheTitleAlone() {
         editor.close();
         assertFalse(screen().contains("\u001b[23;0t"), screen());
+    }
+
+    @Test
+    void closingBeforeTheKeyWatcherStartsDoesNotCrashIt() throws Exception {
+        // 让监听线程在第一次取 reader 前停住，等终端关闭后再放行：打开后立即关闭时的时序。
+        // 用单独的终端，不影响 @AfterEach 关闭共用的那个。
+        Terminal own = TerminalBuilder.builder().system(false)
+                .streams(new PipedInputStream(new PipedOutputStream()), new ByteArrayOutputStream()).type("xterm")
+                .provider(TerminalBuilder.PROP_PROVIDER_EXEC).size(new Size(80, 24)).build();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicReference<Thread> watcher = new AtomicReference<>();
+        Terminal gated = (Terminal) Proxy.newProxyInstance(Terminal.class.getClassLoader(),
+                new Class<?>[]{Terminal.class}, (proxy, method, args) -> {
+                    if ("reader".equals(method.getName()) && "terminal-keys".equals(Thread.currentThread().getName())
+                            && watcher.compareAndSet(null, Thread.currentThread())) {
+                        entered.countDown();
+                        release.await(5, TimeUnit.SECONDS);
+                    }
+                    try {
+                        return method.invoke(own, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+        LineEditor early = new LineEditor(gated, List::of, clock::get);
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        AtomicReference<Throwable> uncaught = new AtomicReference<>();
+        watcher.get().setUncaughtExceptionHandler((thread, e) -> uncaught.set(e));
+
+        early.close();
+        release.countDown();
+        watcher.get().join(5000);
+
+        assertFalse(watcher.get().isAlive());
+        assertNull(uncaught.get(), () -> "监听线程不应因终端已关闭而崩溃：" + uncaught.get());
     }
 
     @Test

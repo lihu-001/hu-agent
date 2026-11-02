@@ -535,7 +535,13 @@ public final class LineEditor implements AutoCloseable {
 
     /** 监听线程：任务期间且没有读取时，固定了输入框就读任务期间的输入框（见 readTaskLine），否则逐个读按键（见 key）。 */
     private void watch() {
-        NonBlockingReader in = terminal.reader();
+        NonBlockingReader in;
+        try {
+            in = terminal.reader();
+        } catch (IllegalStateException e) {
+            // 打开后立即关闭时，终端可能在本线程开始前就已关闭：没有按键可读。
+            return;
+        }
         while (true) {
             String typed = null;
             synchronized (keys) {
