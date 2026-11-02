@@ -173,7 +173,7 @@ hu -p -d --no-auto -- "-x 选项是做什么的"  # 选项可以放在任意位�
 
 每轮模型调用上限（`agent.max-model-calls`，默认 200）只是防止失控的安全网；用到最后一次时，hu 会告诉模型工具不会再执行，请它总结已完成的工作和剩余步骤，而不是直接丢掉最后一批工具调用。上下文压缩默认按 `max-context-tokens` 换算阈值，对话超过阈值一半之前保留全部工具结果的原文。
 
-模型请求与 Claude Code 一样是流式的：回复的文字边生成边显示，每收到完整的一行就插到输入框上方，不足一行的部分等换行或回答结束再显示（显示结果与整段显示相同；队友和后台通知的输出不会插进半行里）。工具调用在回答结束后照常显示摘要。两次收到数据之间最多等 10 分钟（覆盖模型思考和写大段编辑参数的时间），连接最多等 30 秒；等待期间随时可以按 Esc 中断，已显示的半段回复留在屏幕上、不进入对话历史。接口忽略流式参数、返回普通响应时照常解析；个别自定义接口不接受流式参数时，在 `model.properties` 里设置 `stream=false` 改回整段请求（一次请求最多等 10 分钟）。`hu -p` 的最终回答仍在结束后整段写到标准输出。
+模型请求与 Claude Code 一样是流式的：回复的文字边生成边显示，每收到完整的一行就插到输入框上方，不足一行的部分等换行或回答结束再显示（显示结果与整段显示相同；队友和后台通知的输出不会插进半行里）。工具调用在回答结束后照常显示摘要。两次收到数据之间最多等 10 分钟（覆盖模型思考和写大段编辑参数的时间；按收到的字节计时，很长的一行分段送达时不算空闲；接口返回普通响应或错误响应时正文同样这样计时），连接最多等 30 秒；等待期间随时可以按 Esc 中断，已显示的半段回复留在屏幕上、不进入对话历史。接口忽略流式参数、返回普通响应时照常解析；个别自定义接口不接受流式参数时，在 `model.properties` 里设置 `stream=false` 改回整段请求（一次请求最多等 10 分钟）。`hu -p` 的最终回答仍在结束后整段写到标准输出。
 
 模型接口连接失败、请求超时、流式响应中途断开或在流中报告服务端错误、限流或服务端出错（HTTP 408/409/429/5xx）时自动重试，默认最多 5 次，等待从 2 秒起逐次翻倍（最长 30 秒，服务商给出 Retry-After 时按它）；重试的回答另起一段显示；5 次后仍失败就停止本轮任务，已执行的工具调用和结果保留在对话里，输入“继续”即可接着做。api-key 无效（401）、请求无效（400）等重试也不会变的错误直接停止。错误码的说明与能否重试统一在 `model/ModelError` 里管理。
 
@@ -218,7 +218,7 @@ hu update --local ~/coding/hu-agent  # 在任意目录执行：构建并安装�
 | `config.AgentConfig` | 模型部分交给 `ModelConfig`，其余设置读 `config.properties`；工作目录默认为当前目录。教程各阶段仍可用单个文件里的 `openai.*` |
 | `config.ConfigSetup` | 首次运行引导：选择接口类型并填写，按 `model.example.properties` 模板写入，`config.properties` 不存在时按模板一并生成 |
 | `model.AnthropicClient` / `model.ModelClients` | Anthropic Messages 协议客户端（对话历史在发送前转换为 content block）；按接口类型创建客户端 |
-| `model.EventStream` | 流式请求：两种协议的客户端用它解析 SSE 事件（空闲超时、中断、中途断开），文字增量经 `ModelClient.complete` 的 text 回调交给 `ChatLoop`，由 `harness.Transcript.ReplyStream` 按行显示；教程各阶段的旧构造器仍是整段请求 |
+| `model.EventStream` / `model.IdleWatchdog` | 流式请求：两种协议的客户端用它解析 SSE 事件（空闲超时、中断、中途断开；空闲超时按收到的字节计时，普通响应与错误响应的正文同样适用），文字增量经 `ModelClient.complete` 的 text 回调交给 `ChatLoop`，由 `harness.Transcript.ReplyStream` 按行显示；教程各阶段的旧构造器仍是整段请求 |
 | `config.HuVersion` | 版本号，构建时由 Maven 写入 |
 | `HookTrustStore` / `McpTrustStore` | 授权记录改存到 `HuHome` 下 |
 | `context.ProjectContext` | 会话开始时附加到系统提示词的项目上下文：身份、环境、git 状态、`AGENTS.md` / `CLAUDE.md` |

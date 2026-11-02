@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -163,6 +164,36 @@ class OpenAiClientStreamTest {
 
         assertEquals(List.of("你好"), deltas);
         assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(5), "空闲超时后应立即结束");
+    }
+
+    @Test
+    void longLineArrivingInSlowFragmentsDoesNotTimeOut() throws Exception {
+        // 很长的一行（如大段工具参数）分段送达：每段间隔都短于空闲超时、整行却超过，一直有数据就不算空闲。
+        String line = content("x".repeat(60));
+        int step = line.length() / 5 + 1;
+        List<String> chunks = new ArrayList<>();
+        for (int i = 0; i < line.length(); i += step) {
+            chunks.add(line.substring(i, Math.min(line.length(), i + step)));
+        }
+        chunks.add(finish("stop") + data("[DONE]"));
+        server.chunks = chunks;
+        server.chunkDelayMillis = 300;
+
+        assertEquals("x".repeat(60), complete(Duration.ofMillis(1000)).content());
+    }
+
+    @Test
+    void stalledPlainOrErrorBodyTimesOut() {
+        // 接口返回普通响应或错误响应，响应头之后正文迟迟不结束：与事件流一样按空闲超时结束（可重试），不会一直等。
+        server.contentType = "application/json";
+        server.chunks = List.of("{\"choices\":[");
+        server.stallAfter = 1;
+        for (int status : List.of(200, 500)) {
+            server.status = status;
+            long start = System.nanoTime();
+            assertThrows(HttpTimeoutException.class, () -> complete(Duration.ofMillis(500)), "HTTP " + status);
+            assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(5), "HTTP " + status + " 空闲超时后应立即结束");
+        }
     }
 
     @Test

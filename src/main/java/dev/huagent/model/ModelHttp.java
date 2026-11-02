@@ -13,6 +13,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -66,26 +67,35 @@ final class ModelHttp {
         try (InputStream body = response.body()) {
             int status = response.statusCode();
             if (status < 200 || status >= 300) {
-                throw ModelError.failure(status, response.headers(), readAll(body));
+                throw ModelError.failure(status, response.headers(), readAll(body, idleTimeout));
             }
             String type = response.headers().firstValue("Content-Type").orElse("");
             if (!type.toLowerCase(Locale.ROOT).startsWith("text/event-stream")) {
-                return readAll(body);
+                return readAll(body, idleTimeout);
             }
             EventStream.read(body, idleTimeout, events);
             return null;
         }
     }
 
-    /** 读出整个正文；读取中被中断时抛出 InterruptedException，连接断开按连接失败处理。 */
-    private static String readAll(InputStream body) throws IOException, InterruptedException {
+    /**
+     * 读出整个正文，空闲超时与事件流相同（见 IdleWatchdog）：响应头之后正文迟迟不结束时按请求超时处理，不会一直等下去。
+     * 读取中被中断时抛出 InterruptedException，连接断开按连接失败处理。
+     */
+    private static String readAll(InputStream body, Duration idleTimeout) throws IOException, InterruptedException {
+        IdleWatchdog watchdog = new IdleWatchdog(body, idleTimeout);
         try {
-            return new String(body.readAllBytes(), StandardCharsets.UTF_8);
+            return new String(watchdog.body().readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             if (Thread.interrupted()) {
                 throw new InterruptedException("模型请求被中断");
             }
+            if (watchdog.expired()) {
+                throw new HttpTimeoutException("模型接口的响应超过 " + idleTimeout.toSeconds() + " 秒没有数据");
+            }
             throw ModelError.connectionFailure(e);
+        } finally {
+            watchdog.close();
         }
     }
 

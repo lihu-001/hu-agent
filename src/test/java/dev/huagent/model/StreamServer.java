@@ -27,6 +27,8 @@ final class StreamServer implements AutoCloseable {
     volatile List<String> chunks = List.of();
     /** 写完这么多段后停住；-1 表示不停。 */
     volatile int stallAfter = -1;
+    /** 第二段起每段写出前等这么久，模拟数据分段慢慢送达。 */
+    volatile long chunkDelayMillis;
 
     StreamServer(String path) throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -45,6 +47,9 @@ final class StreamServer implements AutoCloseable {
                         return;
                     }
                     if (i < chunks.size()) {
+                        if (i > 0 && chunkDelayMillis > 0) {
+                            Thread.sleep(chunkDelayMillis);
+                        }
                         body.write(chunks.get(i).getBytes(StandardCharsets.UTF_8));
                         body.flush();
                     }
