@@ -3,6 +3,8 @@ package dev.huagent.harness;
 import dev.huagent.hook.AgentHooks;
 import dev.huagent.loop.ChatLoop;
 import dev.huagent.model.ChatMessage;
+import dev.huagent.model.ModelClient;
+import dev.huagent.model.ModelUnavailableException;
 import dev.huagent.prompt.FramedPrompt;
 import dev.huagent.tool.AgentTool;
 import dev.huagent.tool.ToolCall;
@@ -13,6 +15,7 @@ import com.alibaba.fastjson2.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringReader;
 import java.io.StringWriter;
@@ -21,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -176,6 +180,134 @@ class TranscriptTest {
                 "● read_file B", "  ⎿  1 行", "",
                 "● 读完了",
                 "", rule, "❯ ", "对话已结束。"), buffer.toString().lines().toList());
+    }
+
+    @Test
+    void streamedReplyLooksExactlyLikeWholeReply() {
+        List<String> texts = List.of("\n先看看\n第二行\n\n第四行\n", "一行", "a\r\nb\r\n\r\n\r\nc  \n", "  前导空白\n\n\n",
+                "  代码缩进\n    保留\u2028下一行\r结束", "末尾有换行\n");
+        for (Transcript style : List.of(Transcript.marked("●", "⎿", false), Transcript.plain())) {
+            for (String text : texts) {
+                String whole = renderRaw(output -> {
+                    style.startTurn();
+                    style.reply(output, text);
+                });
+                for (int size : List.of(1, 2, 3, text.length())) {
+                    String streamed = renderRaw(output -> {
+                        style.startTurn();
+                        Transcript.ReplyStream stream = style.replyStream();
+                        for (int i = 0; i < text.length(); i += size) {
+                            stream.append(output, text.substring(i, Math.min(text.length(), i + size)));
+                        }
+                        stream.finish(output);
+                        assertTrue(stream.received());
+                    });
+                    assertEquals(whole, streamed, "每段 " + size + " 个字符：" + text);
+                }
+            }
+        }
+    }
+
+    @Test
+    void replyStreamWritesOnlyCompleteLinesUntilFinished() {
+        StringWriter buffer = new StringWriter();
+        PrintWriter output = new PrintWriter(buffer);
+        Transcript transcript = Transcript.marked("●", "⎿", false);
+        transcript.startTurn();
+        Transcript.ReplyStream stream = transcript.replyStream();
+        assertFalse(stream.received());
+
+        stream.append(output, "第一行\n第二");
+        output.flush();
+        assertEquals(List.of("● 第一行"), buffer.toString().lines().toList());
+
+        stream.append(output, "行\n\n");
+        stream.finish(output);
+        output.flush();
+        assertEquals(List.of("● 第一行", "  第二行"), buffer.toString().lines().toList(), "末尾的空行不显示");
+        // 之后的工具调用照常与回复隔开一行。
+        transcript.tool(output, READ, "     1\ta");
+        output.flush();
+        assertEquals(List.of("● 第一行", "  第二行", "", "● read_file src/A.java", "  ⎿  1 行"),
+                buffer.toString().lines().toList());
+    }
+
+    @Test
+    void headlessDoesNotStreamBecauseTheFinalAnswerGoesToStdout() {
+        assertNull(Transcript.headless().replyStream());
+    }
+
+    @Test
+    void chatLoopShowsStreamedLinesWhileTheRequestIsStillRunning() throws Exception {
+        StringWriter buffer = new StringWriter();
+        List<String> seenDuringRequest = new ArrayList<>();
+        ModelClient streaming = new ModelClient() {
+            @Override
+            public ChatMessage complete(List<ChatMessage> messages, List<ToolDefinition> tools) {
+                throw new AssertionError("ChatLoop 应走带 text 的请求");
+            }
+
+            @Override
+            public ChatMessage complete(List<ChatMessage> messages, List<ToolDefinition> tools,
+                                        IntConsumer contextTokens, Consumer<String> text) {
+                text.accept("先读");
+                text.accept("文件\n第二");
+                seenDuringRequest.add(buffer.toString());
+                text.accept("行");
+                return ChatMessage.assistant("先读文件\n第二行", List.of());
+            }
+        };
+        new ChatLoop(streaming, new ToolRegistry(List.of()), 5, "系统", AgentHooks.empty(), null, null, null, null,
+                null, null, null, false, new FramedPrompt("❯ ", '─', () -> 12), null, Transcript.marked("●", "⎿", false))
+                .run(new BufferedReader(new StringReader("你好\nexit\n")), new PrintWriter(buffer));
+
+        assertTrue(seenDuringRequest.getFirst().contains("● 先读文件"), seenDuringRequest.toString());
+        assertFalse(seenDuringRequest.getFirst().contains("第二"), "不足一行的部分等换行或结束");
+        String rule = "─".repeat(11);
+        assertEquals(List.of("", rule, "❯ ", "● 先读文件", "  第二行", "", rule, "❯ ", "对话已结束。"),
+                buffer.toString().lines().toList(), "流式显示过的回复不再整段显示");
+    }
+
+    @Test
+    void retriedRequestShowsThePartialLineBeforeTheRetryNotice() throws Exception {
+        StringWriter buffer = new StringWriter();
+        int[] calls = {0};
+        ModelClient flaky = new ModelClient() {
+            @Override
+            public ChatMessage complete(List<ChatMessage> messages, List<ToolDefinition> tools) {
+                throw new AssertionError("ChatLoop 应走带 text 的请求");
+            }
+
+            @Override
+            public ChatMessage complete(List<ChatMessage> messages, List<ToolDefinition> tools,
+                                        IntConsumer contextTokens, Consumer<String> text) throws IOException {
+                if (calls[0]++ == 0) {
+                    text.accept("说到一");
+                    throw new ModelUnavailableException("模型接口的流式响应中断", null);
+                }
+                text.accept("完整回答");
+                return ChatMessage.assistant("完整回答", List.of());
+            }
+        };
+        new ChatLoop(flaky, new ToolRegistry(List.of()), 5, "系统", AgentHooks.empty(), null, null, null, null,
+                new ModelRetryPolicy(1, 0, millis -> { }), null, null, false, new FramedPrompt("❯ ", '─', () -> 12), null,
+                Transcript.marked("●", "⎿", false))
+                .run(new BufferedReader(new StringReader("你好\nexit\n")), new PrintWriter(buffer));
+
+        List<String> lines = buffer.toString().lines().toList();
+        int partial = lines.indexOf("● 说到一");
+        int notice = lines.indexOf("模型请求> 模型接口的流式响应中断，等待 0 秒后第 1 次重试（最多 1 次）...");
+        int answer = lines.indexOf("● 完整回答");
+        assertTrue(partial >= 0 && partial < notice && notice < answer, lines.toString());
+        assertEquals("", lines.get(answer - 1), "重试的回答另起一段");
+    }
+
+    private static String renderRaw(Consumer<PrintWriter> action) {
+        StringWriter buffer = new StringWriter();
+        PrintWriter output = new PrintWriter(buffer);
+        action.accept(output);
+        output.flush();
+        return buffer.toString();
     }
 
     private static void run(Transcript transcript, PrintWriter output) {

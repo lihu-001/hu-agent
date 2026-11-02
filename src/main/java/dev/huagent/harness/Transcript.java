@@ -22,6 +22,7 @@ import java.util.regex.Pattern;
  * </pre>
  * color 为 true 时（终端能解释 ANSI）工具的 ● 为绿色、失败时为红色，工具名加粗，结果变暗、失败时为红色。
  * 需要确认的工具在执行前先空行（beforeTool），确认行与随后的摘要同属一段。
+ * 流式请求时回复按行边收边显示（replyStream），结果与整段显示相同。
  * marked 的左边距与折行由行编辑器套用 margin（见 Margin）：其他顶格的输出补两列，长行折行后与正文对齐。
  * headless 是 hu -p 的样式：与 plain 相同，但不显示没有工具调用的回答（最终回答），hu -p 把它单独写到标准输出。
  */
@@ -77,14 +78,118 @@ public final class Transcript {
             output.println(PLAIN_REPLY + text);
             return;
         }
-        separate(output);
-        String[] lines = text.strip().split("\\R", -1);
-        output.println(bullet + " " + lines[0]);
-        for (int i = 1; i < lines.length; i++) {
-            output.println(lines[i].isEmpty() ? "" : "  " + lines[i]);
+        ReplyStream stream = new ReplyStream();
+        stream.append(output, text);
+        stream.finish(output);
+    }
+
+    /**
+     * 流式显示一次回答的文字（见 ReplyStream），显示结果与 reply(output, text) 相同；
+     * headless 返回 null：最终回答单独写到标准输出，而回答是不是最终的要等它结束才知道。
+     */
+    public ReplyStream replyStream() {
+        return headless ? null : new ReplyStream();
+    }
+
+    /**
+     * 一次回答的文字按到达的增量显示：只写出完整的行，不足一行的部分留到换行或 finish，
+     * 这样行编辑器能把每一行插到输入框上方，其他线程（队友、后台通知）的输出也不会插进半行里。
+     * marked 去掉开头的空白，段首加 bullet、之后的行缩进两格；行尾空白去掉，空行等到后面还有文字才写出，
+     * 所以末尾的空行不显示。plain 原样写出 "助手> " 加文字。调用方负责加锁与 flush。
+     */
+    public final class ReplyStream {
+        private final StringBuilder line = new StringBuilder();
+        /** 收到过文字（含空白）。 */
+        private boolean received;
+        /** marked：已经写出段首；plain：已经写出 "助手> "。 */
+        private boolean started;
+        /** marked：开头的空白已经跳过。 */
+        private boolean leadingSkipped;
+        /** marked：攒着的空行数。 */
+        private int blanks;
+        /** marked：上一个字符是 \r，紧跟的 \n 属于同一个换行。 */
+        private boolean carriageReturn;
+
+        private ReplyStream() {
         }
-        shown = true;
-        separated = false;
+
+        public void append(PrintWriter output, String delta) {
+            if (delta.isEmpty()) {
+                return;
+            }
+            received = true;
+            if (!marked) {
+                line.append(delta);
+                int end = line.lastIndexOf("\n") + 1;
+                if (end > 0) {
+                    output.print((started ? "" : PLAIN_REPLY) + line.substring(0, end));
+                    line.delete(0, end);
+                    started = true;
+                }
+                return;
+            }
+            for (int i = 0; i < delta.length(); i++) {
+                char c = delta.charAt(i);
+                boolean lineFeed = c == '\n';
+                if (carriageReturn) {
+                    carriageReturn = false;
+                    if (lineFeed) {
+                        continue;
+                    }
+                }
+                if (!leadingSkipped && Character.isWhitespace(c)) {
+                    continue;
+                }
+                leadingSkipped = true;
+                // 与 reply 原来按 \R 分行相同。
+                if (c == '\r' || lineFeed || c == '\u0085' || c == '\u2028' || c == '\u2029') {
+                    carriageReturn = c == '\r';
+                    endLine(output);
+                } else {
+                    line.append(c);
+                }
+            }
+        }
+
+        /** 回答结束（或请求失败、被中断）：写出最后不足一行的部分。之后不再使用。 */
+        public void finish(PrintWriter output) {
+            if (!marked) {
+                if (received) {
+                    output.println((started ? "" : PLAIN_REPLY) + line);
+                }
+                return;
+            }
+            endLine(output);
+            blanks = 0;
+        }
+
+        /** 收到过文字：没收到时（客户端不流式）调用方在回答返回后整段显示。 */
+        public boolean received() {
+            return received;
+        }
+
+        private void endLine(PrintWriter output) {
+            String content = line.toString().stripTrailing();
+            line.setLength(0);
+            if (content.isEmpty()) {
+                if (started) {
+                    blanks++;
+                }
+                return;
+            }
+            for (; blanks > 0; blanks--) {
+                output.println();
+            }
+            if (started) {
+                output.println("  " + content);
+                return;
+            }
+            separate(output);
+            output.println(bullet + " " + content);
+            started = true;
+            shown = true;
+            separated = false;
+        }
     }
 
     /**

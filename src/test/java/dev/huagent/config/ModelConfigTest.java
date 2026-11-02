@@ -82,6 +82,17 @@ class ModelConfigTest {
     }
 
     @Test
+    void streamsByDefaultAndCanBeTurnedOff() throws IOException {
+        assertTrue(load("model=m\napi-key=k\n").stream());
+        assertTrue(load("model=m\napi-key=k\nstream=\n").stream(), "留空按默认值");
+        ModelConfig off = load("model=m\napi-key=k\nstream= FALSE \n");
+        assertFalse(off.stream());
+        assertFalse(off.withModel("other").stream(), "换模型不改变流式设置");
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> load("model=m\napi-key=k\nstream=no\n"))
+                .getMessage().contains("stream"));
+    }
+
+    @Test
     void environmentOverridesFileValues() throws IOException {
         Path file = write("provider=openai\nmodel=file-model\napi-key=file-key\n");
         ModelConfig config = ModelConfig.load(file, Map.of("HU_PROVIDER", "anthropic-compatible",

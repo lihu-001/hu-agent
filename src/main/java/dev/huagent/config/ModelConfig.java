@@ -10,6 +10,7 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 
+import static dev.huagent.config.PropertiesFile.bool;
 import static dev.huagent.config.PropertiesFile.positiveInt;
 import static dev.huagent.config.PropertiesFile.required;
 
@@ -17,9 +18,10 @@ import static dev.huagent.config.PropertiesFile.required;
  * 模型接口配置：接口类型、地址、api-key、模型名称与 token 上限。hu 把它单独保存在 HuHome 下的 model.properties，
  * 首次运行时引导填写；教程各阶段与旧版 hu 仍以 openai.* 写在 config.properties 里（见 legacy）。
  * models 是同一接口下的常用模型，/model 的选择列表把它们排在最前；接口不提供模型列表时只列这些。
+ * stream 为 true（默认）时 hu 流式请求，回答边生成边显示；接口不支持流式时可以关掉。
  */
 public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey, String model,
-                          int maxContextTokens, int maxOutputTokens, List<String> models) {
+                          int maxContextTokens, int maxOutputTokens, List<String> models, boolean stream) {
     public static final int DEFAULT_MAX_CONTEXT_TOKENS = 1_000_000;
     public static final String TEMPLATE = "/hu-agent/model.example.properties";
     /** 环境变量 → 配置项（不含前缀），非空时优先于文件。 */
@@ -38,6 +40,12 @@ public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey,
             throw new IllegalArgumentException("max-output-tokens 必须为正整数");
         }
         models = models == null ? List.of() : List.copyOf(models);
+    }
+
+    /** 流式请求（默认）。 */
+    public ModelConfig(ModelProvider provider, String baseUrl, String apiKey, String model,
+                       int maxContextTokens, int maxOutputTokens, List<String> models) {
+        this(provider, baseUrl, apiKey, model, maxContextTokens, maxOutputTokens, models, true);
     }
 
     /** 不配置常用模型。 */
@@ -93,7 +101,7 @@ public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey,
 
     /** 同一接口换一个模型（目标判断器单独配置模型时使用）。 */
     public ModelConfig withModel(String name) {
-        return new ModelConfig(provider, baseUrl, apiKey, name, maxContextTokens, maxOutputTokens, models);
+        return new ModelConfig(provider, baseUrl, apiKey, name, maxContextTokens, maxOutputTokens, models, stream);
     }
 
     /**
@@ -117,6 +125,7 @@ public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey,
             throw new IllegalArgumentException(provider.label() + "需要在 " + source + " 中填写 " + prefix + "base-url");
         }
         String outputKey = prefix + "max-output-tokens";
+        String streamKey = prefix + "stream";
         return new ModelConfig(provider,
                 baseUrl == null ? provider.officialBaseUrl() : baseUrl.strip(),
                 required(properties, prefix + "api-key", null, source),
@@ -124,7 +133,8 @@ public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey,
                 positiveInt(properties, prefix + "max-context-tokens", DEFAULT_MAX_CONTEXT_TOKENS),
                 StrUtil.isBlank(properties.getProperty(outputKey)) ? provider.defaultMaxOutputTokens()
                         : positiveInt(properties, outputKey, provider.defaultMaxOutputTokens()),
-                models(properties, prefix + "models"));
+                models(properties, prefix + "models"),
+                StrUtil.isBlank(properties.getProperty(streamKey)) || bool(properties, streamKey, true));
     }
 
     /** 逗号（含中文逗号、顿号）或空白分隔，重复的只保留第一个；名称不合法时报错，不回显配置内容。 */
@@ -150,6 +160,6 @@ public record ModelConfig(ModelProvider provider, String baseUrl, String apiKey,
     @Override
     public String toString() {
         return "ModelConfig[provider=" + provider.id() + ", baseUrl=" + baseUrl + ", apiKey=***, model=" + model
-                + ", models=" + models + "]";
+                + ", models=" + models + ", stream=" + stream + "]";
     }
 }

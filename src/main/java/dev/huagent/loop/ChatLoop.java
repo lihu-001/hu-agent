@@ -437,7 +437,7 @@ public final class ChatLoop {
                         if (lastCall) {
                             appendToLast(request, limitNotice());
                         }
-                        // 非流式请求在完整响应前没有输出，先提示等待并在返回后报告耗时。
+                        // 先提示等待并在返回后报告耗时；流式请求的回复在两者之间按行显示。
                         detail(output, "模型请求> 第 " + step + " 次请求中...");
                         List<ChatMessage> sent = request;
                         if (compactor != null) {
@@ -468,8 +468,9 @@ public final class ChatLoop {
                         detail(output, "模型响应> 耗时 " + elapsedMillis + " ms，工具调用 "
                                 + answer.toolCalls().size() + " 个");
                         request.add(answer);
-                        // 与 Claude Code 相同，与工具调用一起返回的中间说明也显示，用户能看到模型打算做什么。
-                        if (StrUtil.isNotBlank(answer.content())) {
+                        // 与 Claude Code 相同，与工具调用一起返回的中间说明也显示，用户能看到模型打算做什么；
+                        // 流式请求时已经边收边显示了。
+                        if (StrUtil.isNotBlank(answer.content()) && !recovery.streamed()) {
                             boolean last = answer.toolCalls().isEmpty();
                             print(output, out -> transcript.reply(out, answer.content(), last));
                         }
@@ -646,10 +647,13 @@ public final class ChatLoop {
         int attempt = 0;
         boolean reactiveCompacted = false;
         while (true) {
+            // 每次尝试各自显示：失败、中断时写出已收到的半行，重试的回答另起一段。
+            Transcript.ReplyStream stream = transcript.replyStream();
             try {
                 // 响应不带 usage 时用量记为未知，不沿用上一次请求的数字。
                 contextTokens = -1;
-                return new Recovery(complete(sent, definitions), request, sent, reactiveCompacted);
+                ChatMessage answer = complete(sent, definitions, stream, output);
+                return new Recovery(answer, request, sent, reactiveCompacted, stream != null && stream.received());
             } catch (ContextTooLargeException e) {
                 if (compactor == null || reactiveCompacted) {
                     throw e;
@@ -694,19 +698,33 @@ public final class ChatLoop {
         }
     }
 
-    /** 空回复不算请求失败：按没有文字也没有工具调用的回复返回，由调用方提醒模型继续（见 MAX_EMPTY_RETRIES）。 */
-    private ChatMessage complete(List<ChatMessage> sent, List<ToolDefinition> definitions)
+    /**
+     * 空回复不算请求失败：按没有文字也没有工具调用的回复返回，由调用方提醒模型继续（见 MAX_EMPTY_RETRIES）。
+     * stream 非 null 时，流式客户端交出的文字边收边按行显示（团队模式下队友也在写同一终端，每次加锁）；
+     * 请求结束时（含失败、中断）写出最后不足一行的部分，再显示重试或中断的提示。
+     */
+    private ChatMessage complete(List<ChatMessage> sent, List<ToolDefinition> definitions,
+                                 Transcript.ReplyStream stream, PrintWriter output)
             throws IOException, InterruptedException {
+        Consumer<String> text = stream == null ? delta -> {
+        } : delta -> print(output, out -> stream.append(out, delta));
         try {
-            return client.complete(List.copyOf(sent), definitions, tokens -> contextTokens = tokens);
+            return client.complete(List.copyOf(sent), definitions, tokens -> contextTokens = tokens, text);
         } catch (EmptyReplyException e) {
             return ChatMessage.assistant(null, List.of());
+        } finally {
+            if (stream != null) {
+                print(output, stream::finish);
+            }
         }
     }
 
-    /** 一次模型请求的结果；summarized 时 history/sent 是压缩后的新状态。 */
+    /**
+     * 一次模型请求的结果；summarized 时 history/sent 是压缩后的新状态。
+     * streamed 表示回复的文字已经边收边显示过，不再整段显示。
+     */
     private record Recovery(ChatMessage answer, List<ChatMessage> history, List<ChatMessage> sent,
-                            boolean summarized) {
+                            boolean summarized, boolean streamed) {
     }
 
     /** 程序事件与后台完成合并渲染，定时事件在前。 */

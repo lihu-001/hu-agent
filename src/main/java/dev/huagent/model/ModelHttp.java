@@ -8,6 +8,7 @@ import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -16,8 +17,12 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
-/** OpenAI 与 Anthropic 两种协议的客户端共用：基础地址与 api-key 校验、发送请求（失败分类见 ModelError）、模型列表解析。 */
+/**
+ * OpenAI 与 Anthropic 两种协议的客户端共用：基础地址与 api-key 校验、发送请求（失败分类见 ModelError）与流式请求、
+ * 模型列表解析。
+ */
 final class ModelHttp {
     /** 建立连接最多等这么久：请求超时可以很长（模型生成慢），连不上的地址仍应很快报错。 */
     static final Duration MAX_CONNECT_TIMEOUT = Duration.ofSeconds(30);
@@ -43,6 +48,45 @@ final class ModelHttp {
             throw ModelError.failure(response);
         }
         return response;
+    }
+
+    /**
+     * 发送流式请求：2xx 且是事件流（text/event-stream）时逐个事件交给 events（见 EventStream），返回 null；
+     * 接口不支持流式、返回了普通响应时返回完整正文，由调用方按非流式响应解析。失败的分类与 send 相同。
+     */
+    static String stream(HttpClient client, HttpRequest request, Duration idleTimeout, EventStream.Listener events)
+            throws IOException, InterruptedException {
+        HttpResponse<InputStream> response;
+        try {
+            response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        } catch (IOException e) {
+            throw ModelError.connectionFailure(e);
+        }
+        // 关闭连接：中断、超时或出错时不再接收剩下的响应。
+        try (InputStream body = response.body()) {
+            int status = response.statusCode();
+            if (status < 200 || status >= 300) {
+                throw ModelError.failure(status, response.headers(), readAll(body));
+            }
+            String type = response.headers().firstValue("Content-Type").orElse("");
+            if (!type.toLowerCase(Locale.ROOT).startsWith("text/event-stream")) {
+                return readAll(body);
+            }
+            EventStream.read(body, idleTimeout, events);
+            return null;
+        }
+    }
+
+    /** 读出整个正文；读取中被中断时抛出 InterruptedException，连接断开按连接失败处理。 */
+    private static String readAll(InputStream body) throws IOException, InterruptedException {
+        try {
+            return new String(body.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            if (Thread.interrupted()) {
+                throw new InterruptedException("模型请求被中断");
+            }
+            throw ModelError.connectionFailure(e);
+        }
     }
 
     /** 模型列表响应正文：两种协议都是 {"data": [{"id": …}, …]}，Anthropic 另有分页字段。 */

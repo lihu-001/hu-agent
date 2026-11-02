@@ -4,6 +4,7 @@ import dev.huagent.tool.ToolDefinition;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 
 @FunctionalInterface
@@ -18,5 +19,15 @@ public interface ModelClient {
     default ChatMessage complete(List<ChatMessage> messages, List<ToolDefinition> tools, IntConsumer contextTokens)
             throws IOException, InterruptedException {
         return complete(messages, tools);
+    }
+
+    /**
+     * 同 complete(messages, tools, contextTokens)；流式请求时回答的文字边生成边交给 text，
+     * 依次拼起来就是返回的 content（工具调用不经过 text）。在调用线程上交出。
+     * 默认不流式、不调用 text：调用方在回答返回后再显示全文。
+     */
+    default ChatMessage complete(List<ChatMessage> messages, List<ToolDefinition> tools, IntConsumer contextTokens,
+                                 Consumer<String> text) throws IOException, InterruptedException {
+        return complete(messages, tools, contextTokens);
     }
 }

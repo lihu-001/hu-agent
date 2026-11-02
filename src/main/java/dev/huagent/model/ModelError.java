@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 
 import java.io.IOException;
 import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.util.Locale;
@@ -84,18 +85,62 @@ public enum ModelError {
      * 正文可能含敏感信息，不进入异常消息。
      */
     static IOException failure(HttpResponse<String> response) {
-        int status = response.statusCode();
+        return failure(response.statusCode(), response.headers(), response.body());
+    }
+
+    /** 同 failure(response)；流式请求失败时正文另外读出。 */
+    static IOException failure(int status, HttpHeaders headers, String body) {
         ModelError error = of(status);
         String message = "模型接口返回 HTTP " + status;
-        if ((error == BAD_REQUEST || error == PAYLOAD_TOO_LARGE) && looksLikeContextOverflow(response.body())) {
+        if ((error == BAD_REQUEST || error == PAYLOAD_TOO_LARGE) && looksLikeContextOverflow(body)) {
             return new ContextTooLargeException(message + "（上下文超长）");
         }
         if (error == null) {
             return new IOException(message);
         }
         message += "（" + error.label + "）";
-        return error.retryable ? new ModelUnavailableException(message, retryAfterSeconds(response))
+        return error.retryable ? new ModelUnavailableException(message, retryAfterSeconds(headers))
                 : new IOException(message);
+    }
+
+    /**
+     * 流式响应进行中接口发来的错误事件（此时状态码已是 200）。请求本身的问题在返回状态码时就已报出，
+     * 中途的错误几乎都是服务端暂时的问题，所以认不出的错误按服务端错误（可重试）处理。
+     */
+    static IOException streamError(ModelError error) {
+        ModelError known = error == null ? SERVER_ERROR : error;
+        String message = "模型接口在流式响应中返回错误（" + known.label + "）";
+        return known.retryable ? new ModelUnavailableException(message, null) : new IOException(message);
+    }
+
+    /** Anthropic 错误事件的 error.type 对应的错误码；认不出时返回 null。 */
+    static ModelError ofAnthropicType(String type) {
+        return switch (type == null ? "" : type) {
+            case "invalid_request_error" -> BAD_REQUEST;
+            case "authentication_error" -> UNAUTHORIZED;
+            case "permission_error" -> FORBIDDEN;
+            case "not_found_error" -> NOT_FOUND;
+            case "request_too_large" -> PAYLOAD_TOO_LARGE;
+            case "rate_limit_error" -> RATE_LIMITED;
+            case "api_error" -> SERVER_ERROR;
+            case "overloaded_error" -> OVERLOADED;
+            default -> null;
+        };
+    }
+
+    /** 流式响应读到一半连接断开：与连接失败一样可以重试。 */
+    static IOException streamBroken(IOException e) {
+        String detail = e.getMessage();
+        if (StrUtil.isBlank(detail) && e.getCause() != null) {
+            detail = e.getCause().getMessage();
+        }
+        return new ModelUnavailableException("模型接口的流式响应中断（" + e.getClass().getSimpleName()
+                + (StrUtil.isBlank(detail) ? "" : "：" + detail) + "）", null, e);
+    }
+
+    /** 流式响应结束了却没有结束标记（如代理提前断开）：回答可能不完整，按可重试处理。 */
+    static IOException streamIncomplete() {
+        return new ModelUnavailableException("模型接口的流式响应没有正常结束", null);
     }
 
     /** 发送请求时的网络失败（连不上、连接被重置、TLS 握手失败等）按可重试处理；超时保持 HttpTimeoutException。 */
@@ -113,8 +158,8 @@ public enum ModelError {
     }
 
     /** 只接受数字秒形式；HTTP-date 与缺失都交给本地退避策略。 */
-    private static Long retryAfterSeconds(HttpResponse<String> response) {
-        String value = response.headers().firstValue("Retry-After").orElse(null);
+    private static Long retryAfterSeconds(HttpHeaders headers) {
+        String value = headers.firstValue("Retry-After").orElse(null);
         if (value == null) {
             return null;
         }
