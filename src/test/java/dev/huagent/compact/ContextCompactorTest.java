@@ -1,5 +1,6 @@
 package dev.huagent.compact;
 
+import dev.huagent.model.ChatImage;
 import dev.huagent.model.ChatMessage;
 import dev.huagent.model.ModelClient;
 import dev.huagent.tool.ToolCall;
@@ -168,6 +169,47 @@ class ContextCompactorTest {
         assertTrue(rendered.get(0).contains("旧摘要"));
         assertTrue(text.contains("第二次摘要"));
         assertFalse(text.contains("用户最新输入"), text);
+    }
+
+    @Test
+    void latestInputKeepsItsImagesThroughCompaction() throws Exception {
+        List<ChatImage> images = List.of(new ChatImage("image/png", "iVBORw0KGgo="));
+        List<String> rendered = new ArrayList<>();
+        ContextCompactor compactor = compactor((m, t) -> {
+            rendered.add(m.get(1).content());
+            return new ChatMessage("assistant", "摘要");
+        }, 100, 3, null);
+        List<ChatMessage> history = new ArrayList<>(toolHistory(2));
+        history.add(ChatMessage.assistant("读完了", List.of()));
+        history.add(ChatMessage.user("看看这张截图 shot.png", images));
+        // 自动压缩与超限后的响应式压缩：还没回复的新输入连同图片附在摘要后，否则模型根本看不到这张图。
+        ContextCompactor.Prepared compacted = null;
+        for (boolean force : List.of(false, true)) {
+            compacted = compactor.beforeRequest(history, output, force);
+            ChatMessage summary = compacted.history().get(1);
+            assertTrue(summary.content().endsWith("用户最新输入（原文）：\n看看这张截图 shot.png"), summary.content());
+            assertEquals(images, summary.images());
+        }
+
+        // 没有新输入时再次压缩：摘要正文交给总结，上次保留的图片继续保留。
+        List<ChatMessage> next = new ArrayList<>(compacted.history());
+        next.add(ChatMessage.assistant(null, List.of(new ToolCall("a", "shell", "{}"))));
+        next.add(ChatMessage.tool("a", "R".repeat(300)));
+        ChatMessage again = compactor.beforeRequest(next, output).history().get(1);
+        assertFalse(again.content().contains("用户最新输入"), again.content());
+        assertEquals(images, again.images());
+        assertTrue(rendered.getLast().contains("[user 附加了 1 张图片]"), rendered.getLast());
+
+        // 完整记录只写图片类型，不写 Base64 内容。
+        List<String> lines = new ArrayList<>();
+        try (var files = Files.list(root.resolve(TranscriptStore.DIRECTORY_NAME))) {
+            for (Path file : files.toList()) {
+                lines.addAll(Files.readAllLines(file, StandardCharsets.UTF_8));
+            }
+        }
+        assertTrue(lines.stream().anyMatch(line -> JSON.parseObject(line).getJSONArray("images") != null
+                && JSON.parseObject(line).getJSONArray("images").toJavaList(String.class).equals(List.of("image/png"))));
+        assertTrue(lines.stream().noneMatch(line -> line.contains("iVBORw0KGgo=")));
     }
 
     @Test

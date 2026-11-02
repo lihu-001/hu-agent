@@ -176,7 +176,10 @@ public final class ContextCompactor {
         // 尚未得到回复的最新用户消息不交给模型总结；最近一条真实用户输入始终原样附在摘要后。
         boolean lastIsUser = "user".equals(micro.get(micro.size() - 1).role());
         List<ChatMessage> body = micro.subList(hasSystem ? 1 : 0, lastIsUser ? micro.size() - 1 : micro.size());
-        String latestInput = latestUserInput(micro);
+        ChatMessage latest = latestUserMessage(micro);
+        // 最近一条用户消息若是之前的摘要，正文已交给模型总结，不重复附加。
+        String latestInput = latest == null || latest.content() == null
+                || latest.content().startsWith(SUMMARY_MARKER) ? null : latest.content();
         String instruction = focus == null ? "" : "\n本次压缩请特别保留：" + focus;
         ChatMessage answer = client.complete(List.of(new ChatMessage("system", SUMMARIZER_PROMPT + instruction),
                 new ChatMessage("user", render(body))), List.of());
@@ -201,7 +204,9 @@ public final class ContextCompactor {
         if (hasSystem) {
             result.add(micro.get(0));
         }
-        result.add(new ChatMessage("user", text.toString()));
+        // 最近一条用户消息里的图片原样保留（是之前的摘要时就是它保留下来的图片）：模型可能还没看到，
+        // 看过的接下来也可能还要用。更早的图片只在摘要里留下文字。
+        result.add(ChatMessage.user(text.toString(), latest == null ? List.of() : latest.images()));
         return result;
     }
 
@@ -210,13 +215,10 @@ public final class ContextCompactor {
         return MicroCompact.size(hasSystem ? messages.subList(1, messages.size()) : messages);
     }
 
-    /** 最近一条用户消息若是之前的摘要则不重复附加（它已交给模型总结）。 */
-    private static String latestUserInput(List<ChatMessage> messages) {
+    private static ChatMessage latestUserMessage(List<ChatMessage> messages) {
         for (int i = messages.size() - 1; i >= 0; i--) {
-            ChatMessage message = messages.get(i);
-            if ("user".equals(message.role())) {
-                return message.content() == null || message.content().startsWith(SUMMARY_MARKER)
-                        ? null : message.content();
+            if ("user".equals(messages.get(i).role())) {
+                return messages.get(i);
             }
         }
         return null;
@@ -239,6 +241,10 @@ public final class ContextCompactor {
         for (ChatMessage message : messages) {
             if (StrUtil.isNotBlank(message.content())) {
                 text.append('[').append(message.role()).append("] ").append(message.content().strip()).append('\n');
+            }
+            if (!message.images().isEmpty()) {
+                text.append('[').append(message.role()).append(" 附加了 ").append(message.images().size())
+                        .append(" 张图片]\n");
             }
             for (ToolCall call : message.toolCalls()) {
                 text.append("[assistant 调用 ").append(call.name()).append("] ").append(call.arguments()).append('\n');

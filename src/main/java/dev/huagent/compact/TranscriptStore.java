@@ -1,5 +1,6 @@
 package dev.huagent.compact;
 
+import dev.huagent.model.ChatImage;
 import dev.huagent.model.ChatMessage;
 
 import com.alibaba.fastjson2.JSON;
@@ -17,7 +18,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
 
-/** 总结前把完整历史写成 JSONL，每行一条消息；只创建新文件，不覆盖已有记录。 */
+/**
+ * 总结前把完整历史写成 JSONL，每行一条消息；只创建新文件，不覆盖已有记录。
+ * 图片只记类型（images 字段）：Base64 内容动辄几 MB，写进去记录就大到 read_file 读不了。
+ */
 public final class TranscriptStore {
     public static final String DIRECTORY_NAME = ".transcripts";
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
@@ -65,6 +69,9 @@ public final class TranscriptStore {
                 item.put("arguments", call.arguments());
                 return item;
             }).toList());
+        }
+        if (!message.images().isEmpty()) {
+            json.put("images", message.images().stream().map(ChatImage::mediaType).toList());
         }
         return json;
     }
