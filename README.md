@@ -202,6 +202,7 @@ java -jar target/hu-agent.jar        # 直接运行，配置读 ~/.hu-agent/mode
 mvn -q compile exec:java             # 从源码运行
 hu update --local                    # 在源码目录执行：构建（跳过测试）并把当前源码安装为 hu 命令
 hu update --local ~/coding/hu-agent  # 在任意目录执行：构建并安装指定目录的源码（相对路径按当前目录解析）
+python eval/run.py --output eval-results/run1   # 用 hu -p 跑一组编程任务并自动判定（请求真实模型），见 eval/README.md
 ```
 
 `hu update`（包括 `--local`、`--pkg`）成功时只显示“更新中”和“更新完成”。失败时返回非零退出码，先显示这次构建、下载和安装的全部输出，最后一行说明原因，例如 hu 仍在运行时的 `更新失败：Cannot replace …\app. Exit every running hu and try again.`；没有明确原因（如构建失败）时最后一行是“更新失败”，原因看上面的构建输出。想边执行边看输出（成功时也显示）时，使用 `hu update --debug`（或 `-d`）；调试选项放在更新来源参数前，例如 `hu update --debug --local`。
