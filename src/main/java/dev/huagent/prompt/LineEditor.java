@@ -452,7 +452,7 @@ public final class LineEditor implements AutoCloseable {
     }
 
     /**
-     * Esc：任务期间的输入框里中断任务，排队的输入放回输入行；确认问答里中断任务；
+     * Esc：任务期间的输入框与确认问答里中断任务，排队的输入放回输入行；
      * 输入行有内容时连按两次清空（清掉的内容进历史），第一次提示再按一次。
      */
     private boolean escape() {
@@ -462,6 +462,7 @@ public final class LineEditor implements AutoCloseable {
             return true;
         }
         if (answering) {
+            unqueue();
             return cancelAnswer();
         }
         String text = reader.getBuffer().toString();
@@ -494,6 +495,7 @@ public final class LineEditor implements AutoCloseable {
         }
         if (answering) {
             pressInterruptInTask();
+            unqueue();
             return cancelAnswer();
         }
         if (interrupt.press()) {
@@ -675,7 +677,10 @@ public final class LineEditor implements AutoCloseable {
         }
     }
 
-    /** 中断任务时排队的输入不再自动发送：以空格连起来放回输入行，排在已键入的文字前面。 */
+    /**
+     * 中断任务时排队的输入不再自动发送：以空格连起来放回输入行，排在已键入的文字前面。
+     * 确认问答里正在读的是回答行，不能写进去（会被当作回答）：放到任务期间攒下的文字前面，回到提示符时填进输入行。
+     */
     private void unqueue() {
         String waiting;
         synchronized (keys) {
@@ -684,6 +689,12 @@ public final class LineEditor implements AutoCloseable {
             }
             waiting = String.join(" ", queued);
             queued.clear();
+            if (answering) {
+                String typed = typeAhead.toString();
+                typeAhead.setLength(0);
+                typeAhead.append(typed.isBlank() ? waiting : waiting + " " + typed);
+                return;
+            }
         }
         Buffer buffer = reader.getBuffer();
         String typed = buffer.toString();

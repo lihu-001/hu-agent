@@ -9,6 +9,8 @@ import org.jline.terminal.TerminalBuilder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
@@ -422,6 +424,32 @@ class LineEditorTest {
         assertFalse(line.isDone());
         type("\r");
         assertEquals("改一下", line.get(5, TimeUnit.SECONDS));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {ESC, "\u0003"})
+    void interruptingAConfirmationPutsQueuedInputBackInsteadOfSendingIt(String key) throws Exception {
+        CountDownLatch interrupts = new CountDownLatch(1);
+        editor.onInterrupt(interrupts::countDown);
+        PromptStyle style = editor.pin(frame());
+        editor.taskRunning(true);
+        awaitScreen(LineEditor.RUNNING);
+        type("改一下\r");
+        awaitScreen(LineEditor.QUEUED + "改一下");
+        type("再");
+        awaitScreen("再");
+
+        CompletableFuture<String> answer = read("[y/N] ");
+        type("y" + key);
+        assertEquals("", answer.get(5, TimeUnit.SECONDS), "中断即拒绝，排队的输入不能当成回答");
+        assertTrue(interrupts.await(5, TimeUnit.SECONDS));
+        endTask();
+
+        // 与任务输入框里中断相同：排队的输入不自动发送，和没提交的文字一起放回输入行。
+        CompletableFuture<String> line = readPinned(style);
+        assertFalse(line.isDone());
+        type("\r");
+        assertEquals("改一下 再", line.get(5, TimeUnit.SECONDS));
     }
 
     @Test
