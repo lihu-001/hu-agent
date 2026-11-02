@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ShellToolTest {
     @TempDir
@@ -48,6 +49,35 @@ class ShellToolTest {
                 .execute(arguments("this_command_does_not_exist_12345"));
         assertTrue(result.contains("退出码："), result);
         assertFalse(result.contains("退出码：0"), result);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "cmd /c exit 7; Write-Output ok",
+            "cmd /c exit 7\nWrite-Output ok",
+            "cmd /c exit 7; if (-not $?) { Write-Output handled }",
+            "cmd /c exit 7; cmd /c exit 0"
+    })
+    void windowsSuccessfulLastCommandIgnoresEarlierNativeFailure(String command) throws Exception {
+        assumeTrue(windows);
+        String result = shell(Duration.ofSeconds(10), 1000).execute(arguments(command));
+        assertTrue(result.contains("退出码：0"), result);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"cmd /c exit 7", "Write-Output ok; cmd /c exit 7", "cmd /c exit 3; cmd /c exit 7"})
+    void windowsPreservesLastNativeFailureExitCode(String command) throws Exception {
+        assumeTrue(windows);
+        String result = shell(Duration.ofSeconds(10), 1000).execute(arguments(command));
+        assertTrue(result.contains("退出码：7"), result);
+    }
+
+    @Test
+    void windowsCanExplicitlyPropagateEarlierNativeFailure() throws Exception {
+        assumeTrue(windows);
+        String result = shell(Duration.ofSeconds(10), 1000)
+                .execute(arguments("cmd /c exit 7; if (-not $?) { exit $LASTEXITCODE }; Write-Output ok"));
+        assertTrue(result.contains("退出码：7"), result);
     }
 
     @ParameterizedTest

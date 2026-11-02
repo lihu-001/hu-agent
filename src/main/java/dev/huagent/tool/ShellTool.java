@@ -41,7 +41,8 @@ public final class ShellTool implements AgentTool {
                 "在 " + workDirectory + " 中执行命令。语法为 "
                         + (windows ? "Windows PowerShell 5.1：没有 && 和 ||，用 ; 分隔，需要前一条成功时写 "
                         + "if ($?) { ... }；没有 grep、head、tail、cat，对应 Select-String、Select-Object -First/-Last、"
-                        + "Get-Content" : "POSIX /bin/sh")
+                        + "Get-Content；退出码取最后一条命令（成功为 0，原生程序失败为它的退出码，其他失败为 1），"
+                        + "中间命令失败要中止时写 if (-not $?) { exit $LASTEXITCODE }" : "POSIX /bin/sh")
                         + "。每次启动独立进程，cd 和变量不会跨调用保留。命令超时 "
                         + timeout.toSeconds() + " 秒，最多返回 " + maxOutputChars
                         + " 个输出字符，超出时保留开头和结尾。用于构建、测试、git 等命令；"
@@ -109,6 +110,9 @@ public final class ShellTool implements AgentTool {
         if (!windows) {
             return List.of("/bin/sh", "-c", command);
         }
+        // 最后一条命令的 $? 要在脚本块里紧接着记下，出了脚本块就不准了。之前失败过的原生程序留下的
+        // $LASTEXITCODE 只在最后一条命令也失败时使用，不让后面成功的命令也算失败。
+        // 输出先经 Out-Default 显示完再 exit：否则还没格式化的输出（如 Get-Location 的表格）会随 exit 丢掉。
         String script = """
                 $ErrorActionPreference = 'Stop'
                 $ProgressPreference = 'SilentlyContinue'
@@ -117,9 +121,13 @@ public final class ShellTool implements AgentTool {
                 & {
                 """ + command + """
 
+                $global:HuLastSucceeded = $?
+                } | Out-Default
+                if ($global:HuLastSucceeded -eq $false) {
+                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                    exit 1
                 }
-                if (-not $?) { exit 1 }
-                if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
+                exit 0
                 """;
         return List.of("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
                 "-OutputFormat", "Text", "-EncodedCommand",
