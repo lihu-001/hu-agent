@@ -161,7 +161,7 @@ hu -p -d --no-auto -- "-x 选项是做什么的"  # 选项可以放在任意位�
 
 ### 工具与项目上下文
 
-基础工具与 Claude Code 对应：`glob` 按文件名查找，`grep` 按内容搜索（Java 正则；只读、免确认；git 仓库里遵守 `.gitignore`；`output_mode` 可选只列文件、显示匹配行与行号、计数），`read_file` 读文件（每行带行号，默认 2000 行，长文件用 `offset` / `limit` 分段读），`edit_file` 精确替换（`old_text` 必须唯一，否则不修改；`replace_all` 替换全部），`write_file` 写文件，`shell` 只用于构建、测试、git 等命令（输出超过上限时保留开头和结尾；Windows 上退出码取最后一条命令，前面失败过的原生程序不会让后面成功的命令也报失败）。
+基础工具与 Claude Code 对应：`glob` 按文件名查找，`grep` 按内容搜索（Java 正则；只读、免确认；git 仓库里遵守 `.gitignore`；`output_mode` 可选只列文件、显示匹配行与行号、计数），`read_file` 读文件（每行带行号，默认 2000 行，长文件用 `offset` / `limit` 分段读；单行超过 2000 字符时截断，用 `column` 接着读这一行），`edit_file` 精确替换（`old_text` 必须唯一，否则不修改；`replace_all` 替换全部），`write_file` 写文件，`shell` 只用于构建、测试、git 等命令（输出超过上限时保留开头和结尾；Windows 上退出码取最后一条命令，前面失败过的原生程序不会让后面成功的命令也报失败）。
 
 每次会话开始时，hu 把项目上下文附加到系统提示词，模型从第一轮起就知道自己是谁、在哪个项目里：
 

@@ -111,8 +111,26 @@ class FileToolsTest {
         assertEquals(59, result.lines().filter(text -> text.endsWith(line)).count());
         assertTrue(call("read_file", Map.of("path", "read.txt", "offset", 60)).startsWith("    60\t" + line));
         call("write_file", Map.of("path", "long.txt", "content", "x".repeat(3000)));
-        assertEquals("     1\t" + "x".repeat(2000) + "…（本行共 3000 字符，已截断）",
+        assertEquals("     1\t" + "x".repeat(2000) + "…（本行共 3000 字符，已截断；用 offset=1、column=2001 接着读本行）",
                 call("read_file", Map.of("path", "long.txt")));
+    }
+
+    @Test
+    void columnContinuesATruncatedLongLine() throws Exception {
+        String line = "a".repeat(2000) + "b".repeat(2000) + "c".repeat(500);
+        call("write_file", Map.of("path", "long.txt", "content", "首行\n" + line + "\n末行\n"));
+        // column 只作用于 offset 那一行，之后的行照常显示。
+        assertEquals("     2\t" + "b".repeat(2000)
+                        + "…（本行共 4500 字符，以上是第 2001–4000 个，已截断；用 offset=2、column=4001 接着读本行）\n"
+                        + "     3\t末行",
+                call("read_file", Map.of("path", "long.txt", "offset", 2, "column", 2001)));
+        assertEquals("     2\t" + "c".repeat(500) + "（本行共 4500 字符，以上是第 4001–4500 个）\n"
+                        + "[已显示第 2–2 行，共 3 行；用 offset=3 继续读取]",
+                call("read_file", Map.of("path", "long.txt", "offset", 2, "column", 4001, "limit", 1)));
+        assertEquals("工具错误：column 超出范围：第 2 行共 4500 个字符。",
+                call("read_file", Map.of("path", "long.txt", "offset", 2, "column", 4501)));
+        assertEquals("     1\t首行", call("read_file", Map.of("path", "long.txt", "column", 1, "limit", 1))
+                .lines().findFirst().orElseThrow());
     }
 
     @ParameterizedTest
@@ -120,7 +138,7 @@ class FileToolsTest {
             "{\"path\":\"x\",\"extra\":1}", "{\"path\":\"x\",\"limit\":0}",
             "{\"path\":\"x\",\"limit\":-1}", "{\"path\":\"x\",\"limit\":1.5}",
             "{\"path\":\"x\",\"limit\":\"2\"}", "{\"path\":\"x\",\"limit\":null}",
-            "{\"path\":\"x\",\"limit\":2147483648}", "{\"path\":\"x\",\"offset\":0}"})
+            "{\"path\":\"x\",\"limit\":2147483648}", "{\"path\":\"x\",\"offset\":0}", "{\"path\":\"x\",\"column\":0}"})
     void invalidReadArgumentsReturnErrors(String arguments) throws Exception {
         assertTrue(tools.execute(new ToolCall("bad", "read_file", arguments)).startsWith("工具错误"));
     }
