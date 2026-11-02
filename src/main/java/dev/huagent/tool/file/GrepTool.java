@@ -98,7 +98,12 @@ public final class GrepTool implements AgentTool {
         Map<String, Path> candidates = Files.isDirectory(base, LinkOption.NOFOLLOW_LINKS) ? candidates(base)
                 : new TreeMap<>(Map.of(display(base), base));
 
-        List<FileMatches> found = new ArrayList<>();
+        // 边搜边输出：只保留显示得下的条目，其余只计数，内存里不会攒下所有命中文件的内容。
+        List<String> body = new ArrayList<>();
+        int bodySize = 0;
+        int bodyChars = 0;
+        int matchedFiles = 0;
+        int total = 0;
         int searched = 0;
         for (Path file : candidates.values()) {
             if (Thread.currentThread().isInterrupted()) {
@@ -121,46 +126,58 @@ public final class GrepTool implements AgentTool {
                 }
             }
             if (!hits.isEmpty()) {
-                found.add(new FileMatches(display(file), lines, hits));
+                matchedFiles++;
+                total += hits.size();
+                String name = display(file);
+                List<String> entries = switch (mode) {
+                    case FILES -> List.of(name);
+                    case COUNT -> List.of(name + ":" + hits.size());
+                    // 带上下文时文件之间也用 -- 分隔。
+                    default -> contentLines(name, lines, hits, context, context > 0 && bodySize > 0);
+                };
+                bodySize += entries.size();
+                for (String entry : entries) {
+                    if (body.size() < headLimit && bodyChars <= MAX_OUTPUT_CHARS) {
+                        body.add(entry);
+                        bodyChars += entry.length() + 1;
+                    }
+                }
             }
         }
-        if (found.isEmpty()) {
+        if (matchedFiles == 0) {
             return "[无匹配]（搜索了 " + searched + " 个文件）";
         }
-        int total = found.stream().mapToInt(match -> match.hits().size()).sum();
-        List<String> body = switch (mode) {
-            case FILES -> found.stream().map(FileMatches::path).toList();
-            case COUNT -> found.stream().map(match -> match.path() + ":" + match.hits().size()).toList();
-            default -> contentLines(found, context);
-        };
-        String header = FILES.equals(mode) ? "找到 " + found.size() + " 个文件"
-                : "找到 " + total + " 处匹配（" + found.size() + " 个文件）";
-        return render(header, body, headLimit);
+        String header = FILES.equals(mode) ? "找到 " + matchedFiles + " 个文件"
+                : "找到 " + total + " 处匹配（" + matchedFiles + " 个文件）";
+        return render(header, body, bodySize, headLimit);
     }
 
-    /** 与 ripgrep 相同：匹配行 path:行号:内容，上下文行 path-行号-内容，不相连的片段之间用 -- 分隔。 */
-    private static List<String> contentLines(List<FileMatches> found, int context) {
+    /**
+     * 一个文件的匹配，与 ripgrep 相同：匹配行 path:行号:内容，上下文行 path-行号-内容，不相连的片段之间用 -- 分隔。
+     * separated 表示前面已有其他文件的片段，第一个片段前也加 --。
+     */
+    private static List<String> contentLines(String path, List<String> lines, List<Integer> hits, int context,
+                                             boolean separated) {
         List<String> out = new ArrayList<>();
-        for (FileMatches match : found) {
-            int last = -2;
-            Set<Integer> hits = Set.copyOf(match.hits());
-            for (int hit : match.hits()) {
-                int from = Math.max(0, hit - context);
-                int to = Math.min(match.lines().size() - 1, hit + context);
-                if (context > 0 && !out.isEmpty() && from > last + 1) {
-                    out.add("--");
-                }
-                for (int i = Math.max(from, last + 1); i <= to; i++) {
-                    out.add(match.path() + (hits.contains(i) ? ":" : "-") + (i + 1)
-                            + (hits.contains(i) ? ":" : "-") + clip(match.lines().get(i)));
-                }
-                last = Math.max(last, to);
+        Set<Integer> hitSet = Set.copyOf(hits);
+        int last = -2;
+        for (int hit : hits) {
+            int from = Math.max(0, hit - context);
+            // context 可以很大，相加时按 long 算，避免溢出后一行也不显示。
+            int to = (int) Math.min(lines.size() - 1L, (long) hit + context);
+            if (context > 0 && (separated || !out.isEmpty()) && from > last + 1) {
+                out.add("--");
             }
+            for (int i = Math.max(from, last + 1); i <= to; i++) {
+                out.add(path + (hitSet.contains(i) ? ":" : "-") + (i + 1)
+                        + (hitSet.contains(i) ? ":" : "-") + clip(lines.get(i)));
+            }
+            last = Math.max(last, to);
         }
         return out;
     }
 
-    private static String render(String header, List<String> body, int headLimit) {
+    private static String render(String header, List<String> body, int bodySize, int headLimit) {
         StringBuilder text = new StringBuilder(header);
         int shown = 0;
         for (String line : body) {
@@ -170,14 +187,17 @@ public final class GrepTool implements AgentTool {
             text.append('\n').append(line);
             shown++;
         }
-        if (shown < body.size()) {
-            text.append("\n[只显示了前 ").append(shown).append(" 条，共 ").append(body.size())
+        if (shown < bodySize) {
+            text.append("\n[只显示了前 ").append(shown).append(" 条，共 ").append(bodySize)
                     .append(" 条；可用 path、glob 缩小范围，或调大 head_limit]");
         }
         return text.toString();
     }
 
-    /** git 仓库里用 ls-files 列出跟踪的和未被忽略的文件；拿不到列表时遍历目录。键是显示路径，按字典序排列。 */
+    /**
+     * git 仓库里用 ls-files 列出跟踪的和未被忽略的文件；拿不到列表、或列表为空而 path 本身被忽略（明确要搜被忽略的目录）
+     * 时遍历目录。列表为空而 path 没有被忽略时，里面只有被忽略的文件，不搜。键是显示路径，按字典序排列。
+     */
     private Map<String, Path> candidates(Path base) throws IOException {
         Map<String, Path> result = new TreeMap<>();
         String listed = Git.output(base, "ls-files", "-z", "--cached", "--others", "--exclude-standard");
@@ -192,7 +212,7 @@ public final class GrepTool implements AgentTool {
                     result.put(display(file), file);
                 }
             }
-            if (!result.isEmpty()) {
+            if (!result.isEmpty() || Git.output(base, "check-ignore", "-q", ".") == null) {
                 return result;
             }
         }
@@ -246,8 +266,5 @@ public final class GrepTool implements AgentTool {
 
     private static String clip(String line) {
         return line.length() <= MAX_LINE_CHARS ? line : line.substring(0, MAX_LINE_CHARS) + "…";
-    }
-
-    private record FileMatches(String path, List<String> lines, List<Integer> hits) {
     }
 }

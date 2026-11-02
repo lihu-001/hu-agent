@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -62,6 +63,38 @@ class GrepToolTest {
     }
 
     @Test
+    void contextSeparatesFilesAndHeadLimitCountsEveryLine() throws Exception {
+        Map<String, Object> args = Map.of("pattern", "上下文剩余", "glob", "*.java", "output_mode", "content",
+                "context", 1);
+        assertEquals("找到 2 处匹配（2 个文件）\n"
+                        + "src/main/App.java-1-class App {\n"
+                        + "src/main/App.java:2:    // 上下文剩余\n"
+                        + "src/main/App.java-3-    int remaining;\n"
+                        + "--\n"
+                        + "src/main/Prompt.java-1-class Prompt {\n"
+                        + "src/main/Prompt.java:2:    String text = \"上下文剩余\";\n"
+                        + "src/main/Prompt.java-3-}",
+                grep(args));
+        Map<String, Object> limited = new HashMap<>(args);
+        limited.put("head_limit", 2);
+        assertEquals("找到 2 处匹配（2 个文件）\n"
+                        + "src/main/App.java-1-class App {\n"
+                        + "src/main/App.java:2:    // 上下文剩余\n"
+                        + "[只显示了前 2 条，共 7 条；可用 path、glob 缩小范围，或调大 head_limit]",
+                grep(limited));
+    }
+
+    @Test
+    void hugeContextShowsWholeFileInsteadOfOverflowing() throws Exception {
+        assertEquals("找到 1 处匹配（1 个文件）\n"
+                        + "src/main/App.java-1-class App {\n"
+                        + "src/main/App.java-2-    // 上下文剩余\n"
+                        + "src/main/App.java:3:    int remaining;\n"
+                        + "src/main/App.java-4-}",
+                grep(Map.of("pattern", "int remaining", "output_mode", "content", "context", Integer.MAX_VALUE)));
+    }
+
+    @Test
     void countModeIgnoreCaseGlobAndPathFilters() throws Exception {
         assertEquals("找到 2 处匹配（2 个文件）\nsrc/main/App.java:1\nsrc/main/Prompt.java:1",
                 grep(Map.of("pattern", "^CLASS", "ignore_case", true, "output_mode", "count")));
@@ -99,6 +132,16 @@ class GrepToolTest {
                 grep(Map.of("pattern", "上下文剩余")));
         // path 本身被忽略时退回遍历目录，仍能搜到。
         assertEquals("找到 1 个文件\nbuild/out.java", grep(Map.of("pattern", "上下文剩余", "path", "build")));
+    }
+
+    @Test
+    void directoryHoldingOnlyIgnoredFilesIsNotWalked() throws Exception {
+        assumeTrue(GitFixture.available(), "本机没有 git");
+        GitFixture.init(root);
+        // docs 本身没有被忽略，但里面只有被忽略的文件：git 列表为空，不能退回遍历把它们搜出来。
+        write(".gitignore", "*.md\n");
+        assertEquals("[无匹配]（搜索了 0 个文件）", grep(Map.of("pattern", "上下文剩余", "path", "docs")));
+        assertEquals("找到 2 个文件\nsrc/main/App.java\nsrc/main/Prompt.java", grep(Map.of("pattern", "上下文剩余")));
     }
 
     @ParameterizedTest
