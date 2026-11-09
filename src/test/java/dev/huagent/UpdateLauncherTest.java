@@ -9,6 +9,8 @@ import org.junit.jupiter.api.condition.OS;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.concurrent.TimeUnit;
 
@@ -205,10 +207,62 @@ class UpdateLauncherTest {
         assertTrue(quiet.output().startsWith("更新中\n"), quiet.output());
         assertTrue(quiet.output().contains("INSTALL-HOST"), quiet.output());
         assertTrue(quiet.output().endsWith("\n更新失败：INSTALL-EXCEPTION\n"), quiet.output());
+        // 异常只作为最后一行的原因出现，不再附带 PowerShell 的错误位置与 CategoryInfo。
+        assertFalse(quiet.output().contains("FullyQualifiedErrorId"), quiet.output());
         Result result = run("--debug --pkg fake.zip");
         assertEquals(1, result.code());
-        assertTrue(result.output().contains("INSTALL-EXCEPTION"), result.output());
-        assertTrue(result.output().contains("更新失败"), result.output());
+        assertTrue(result.output().contains("FullyQualifiedErrorId"), result.output());
+        assertTrue(result.output().endsWith("\n更新失败：INSTALL-EXCEPTION\n"), result.output());
+    }
+
+    @Test
+    void runningHuStopsTheUpdateBeforeBuildingOrInstalling() throws Exception {
+        Process first = runningHu();
+        Process second = runningHu();
+        try {
+            String reason = "更新失败：还有 hu 在运行（" + described(first.toHandle()) + "；" + described(second.toHandle())
+                    + "），请先退出再更新；找不到窗口时可以用 Stop-Process -Id " + first.pid() + "," + second.pid() + " 结束。\n";
+            for (String args : new String[]{"--local", "--pkg fake.zip", "-d --local"}) {
+                assertEquals(new Result(1, "更新中\n" + reason), run(args), args);
+            }
+        } finally {
+            stop(first.toHandle());
+            stop(second.toHandle());
+        }
+        assertFalse(Files.exists(root.resolve("build-args.txt")));
+        assertFalse(Files.exists(root.resolve("installed.txt")));
+    }
+
+    @Test
+    void huStartedDuringTheUpdateIsNamedWhenTheInstallerCannotReplaceApp() throws Exception {
+        Path pidFile = root.resolve("hu.pid");
+        // 安装器开始后才启动的 hu：替换 app 失败时再查一次，说明是哪个 hu，不显示安装器的输出。
+        String arguments = "-cp \"" + testClasses() + "\" " + RunningHu.class.getName() + " \"" + huJar() + "\"";
+        installerScript("Write-Host 'INSTALL-HOST'\n"
+                + "$hu = Start-Process -PassThru -WindowStyle Hidden -FilePath '" + java() + "' -ArgumentList '" + arguments + "'\n"
+                + "[IO.File]::WriteAllText('" + pidFile + "', [string] $hu.Id)\n"
+                + "throw 'Cannot replace " + app + ". Exit every running hu and try again.'\n");
+        try {
+            Result result = run("--pkg fake.zip");
+            ProcessHandle hu = ProcessHandle.of(Long.parseLong(Files.readString(pidFile).trim())).orElseThrow();
+            assertEquals(new Result(1, "更新中\n更新失败：还有 hu 在运行（" + described(hu)
+                    + "），请先退出再更新；找不到窗口时可以用 Stop-Process -Id " + hu.pid() + " 结束。\n"), result);
+        } finally {
+            if (Files.exists(pidFile)) {
+                ProcessHandle.of(Long.parseLong(Files.readString(pidFile).trim())).ifPresent(UpdateLauncherTest::stop);
+            }
+        }
+    }
+
+    @Test
+    void cannotReplaceWithoutARunningHuKeepsTheInstallerReason() throws Exception {
+        installer("throw 'Cannot replace " + app + ". Exit every running hu and try again.'");
+        Result result = run("--pkg fake.zip");
+        assertEquals(1, result.code(), result.output());
+        assertTrue(result.output().contains("INSTALL-HOST"), result.output());
+        assertFalse(result.output().contains("FullyQualifiedErrorId"), result.output());
+        assertTrue(result.output().endsWith("\n更新失败：Cannot replace " + app + ". Exit every running hu and try again.\n"),
+                result.output());
     }
 
     @Test
@@ -259,6 +313,44 @@ class UpdateLauncherTest {
     @Test
     void launcherRemainsAscii() throws Exception {
         assertTrue(Files.readString(launcher).chars().allMatch(c -> c < 128));
+    }
+
+    private static String java() {
+        return ProcessHandle.current().info().command().orElseThrow();
+    }
+
+    private static Path testClasses() {
+        return Path.of("target/test-classes").toAbsolutePath();
+    }
+
+    private Path huJar() {
+        return app.resolve("lib").resolve("hu-agent.jar");
+    }
+
+    /** 模拟正在运行的 hu：java.exe，命令行里带着安装目录的 app\lib\hu-agent.jar。 */
+    private Process runningHu() throws Exception {
+        return new ProcessBuilder(java(), "-cp", testClasses().toString(), RunningHu.class.getName(), huJar().toString())
+                .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+    }
+
+    /** 失败原因里对一个 hu 的说明：PID 与启动时间。 */
+    private static String described(ProcessHandle hu) {
+        String started = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault())
+                .format(hu.info().startInstant().orElseThrow());
+        return "PID " + hu.pid() + "，" + started + " 启动";
+    }
+
+    /** 结束模拟的 hu 并等它退出，以免它占着临时目录。 */
+    private static void stop(ProcessHandle hu) {
+        hu.destroyForcibly();
+        hu.onExit().join();
+    }
+
+    /** 模拟 hu 的主类：什么也不做，等测试结束它。 */
+    public static final class RunningHu {
+        public static void main(String[] args) throws InterruptedException {
+            Thread.sleep(60_000);
+        }
     }
 
     private record Result(int code, String output) {}

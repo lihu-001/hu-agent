@@ -205,7 +205,7 @@ hu update --local ~/coding/hu-agent  # 在任意目录执行：构建并安装�
 python eval/run.py --output eval-results/run1   # 用 hu -p 跑一组编程任务并自动判定（请求真实模型），见 eval/README.md
 ```
 
-`hu update`（包括 `--local`、`--pkg`）成功时只显示“更新中”和“更新完成”。失败时返回非零退出码，先显示这次构建、下载和安装的全部输出，最后一行说明原因，例如 hu 仍在运行时的 `更新失败：Cannot replace …\app. Exit every running hu and try again.`；没有明确原因（如构建失败）时最后一行是“更新失败”，原因看上面的构建输出。想边执行边看输出（成功时也显示）时，使用 `hu update --debug`（或 `-d`）；调试选项放在更新来源参数前，例如 `hu update --debug --local`。
+`hu update`（包括 `--local`、`--pkg`）成功时只显示“更新中”和“更新完成”。失败时返回非零退出码，先显示这次构建、下载和安装的全部输出，最后一行说明原因（安装脚本的异常只作为这一行出现，不附带 PowerShell 的错误位置）；没有明确原因（如构建失败）时最后一行是“更新失败”，原因看上面的构建输出。Windows 上还有 hu 在运行时，安装脚本无法替换 `app` 目录，所以构建和下载之前先检查，发现时不显示其他输出，只给一行原因，例如 `更新失败：还有 hu 在运行（PID 46836，2026-11-02 15:11 启动），请先退出再更新；找不到窗口时可以用 Stop-Process -Id 46836 结束。`；构建期间才启动的 hu 在替换失败时同样这样说明。想边执行边看输出（成功时也显示）时，使用 `hu update --debug`（或 `-d`）；调试选项放在更新来源参数前，例如 `hu update --debug --local`。
 
 `hu update --local` 用仓库里的安装脚本安装 `target` 下的发布包，结果与正式安装相同，只是来源换成本地构建；之后 `hu update` 会回到最新发布版。构建要用 `JAVA_HOME` 指定的 JDK 25：hu 自带的 Java 是 JRE，只能运行 hu、不能编译。`JAVA_HOME` 是旧版 JDK 或指向 JRE 时，失败的最后一行会提示先指定 JDK 25，例如 `$env:JAVA_HOME = 'C:\path\to\jdk-25'`（macOS / Linux 为 `export JAVA_HOME=/path/to/jdk-25`）。
 
