@@ -38,7 +38,13 @@
             <source>src/main/resources/hu-agent/config.example.properties</source>
             <outputDirectory/>
         </file>
-        <!-- 改编自 opencode 与 oh-my-pi 的提示词随 jar 发布，MIT 要求附上它们的版权与许可声明。 -->
+        <!-- hu-agent 自己的 MIT 许可证：MIT 要求软件的副本附上版权与许可声明。 -->
+        <file>
+            <source>LICENSE</source>
+            <outputDirectory/>
+        </file>
+        <!-- 改编自 opencode 与 oh-my-pi 的提示词，以及打进 jar 的 JLine、fastjson2、Hutool，许可证都要求随分发附上
+             版权与许可声明。 -->
         <file>
             <source>THIRD_PARTY_NOTICES.md</source>
             <outputDirectory/>

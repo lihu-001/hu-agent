@@ -226,7 +226,7 @@ python eval/run.py --output eval-results/run1   # 用 hu -p 跑一组编程任�
 | `tool.file.GrepTool` | 按内容搜索（对应 Claude Code 的 Grep）；`read_file` 带行号并支持 `offset`，`edit_file` 要求匹配唯一 |
 | `prompt.LineEditor` | 交互终端用 JLine 读输入：斜杠命令列表（`SlashMenu`，可滚动，列表显示期间才开启鼠标跟踪）与输入历史；读取期间的后台、队友输出插在输入行上方。输入输出被重定向时仍按行读取 |
 
-发布包结构：`hu-agent/bin/hu`、`hu-agent/bin/hu.cmd`、`hu-agent/lib/hu-agent.jar`，以及 `hu-agent/install.sh`、`hu-agent/install.ps1`（供 `hu update --pkg` 离线使用）。启动脚本在 [src/dist/bin](src/dist/bin)，打包配置在 [src/assembly/dist.xml](src/assembly/dist.xml)。
+发布包结构：`hu-agent/bin/hu`、`hu-agent/bin/hu.cmd`、`hu-agent/lib/hu-agent.jar`，`hu-agent/install.sh`、`hu-agent/install.ps1`（供 `hu update --pkg` 离线使用），以及 `hu-agent/LICENSE`、`hu-agent/THIRD_PARTY_NOTICES.md`。启动脚本在 [src/dist/bin](src/dist/bin)，打包配置在 [src/assembly/dist.xml](src/assembly/dist.xml)。
 
 ## 发布
 
@@ -249,3 +249,7 @@ git push origin v0.1.0
 ```text
 https://api.adoptium.net/v3/assets/release_name/eclipse/<版本，如 jdk-25.0.5%2B8>?image_type=jre
 ```
+
+## 许可证
+
+hu-agent 以 [MIT 许可证](LICENSE) 发布。部分提示词改编自 opencode 与 oh-my-pi，`hu-agent.jar` 里打进了 JLine（BSD-3-Clause）、fastjson2（Apache License 2.0）与 Hutool（木兰宽松许可证第 2 版），它们的版权与许可声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。两个文件都随发布包安装在 `~/.hu-agent/app/`。

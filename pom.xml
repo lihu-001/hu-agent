@@ -6,6 +6,12 @@
     <!-- 发布时由 CI 传入 -Drevision=<标签去掉 v>，本地构建使用默认值。 -->
     <version>${revision}</version>
     <name>hu-agent</name>
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+        </license>
+    </licenses>
     <properties>
         <revision>0.1.0</revision>
         <maven.compiler.release>25</maven.compiler.release>
@@ -14,6 +20,8 @@
         <main.class>dev.huagent.HuMain</main.class>
         <exec.mainClass>${main.class}</exec.mainClass>
     </properties>
+    <!-- 运行时依赖都由 shade 打进 hu-agent.jar 随发布包分发；升级版本或新增依赖时同步更新 THIRD_PARTY_NOTICES.md
+         里的依赖表与许可证原文。 -->
     <dependencies>
         <dependency>
             <groupId>cn.hutool</groupId>
